@@ -38,16 +38,30 @@ python Video_inference.py \
 
 Video Demo (Comparison)
 
-Original Video (6 FPS)
+Original Video (6 FPS) - On One Puch Man
 
 https://github.com/user-attachments/assets/4b13bd06-0757-44c1-aabf-ba682f54e1a7
 
 
 
-Interpolated Video (96 FPS)
+Interpolated Video (96 FPS) - On One Puch Man
 
 
 https://github.com/user-attachments/assets/8073f3aa-6ff9-48ad-a7bb-818471eab434
+
+Original Video (6 FPS) - On Red Dead Redemption 2
+
+
+
+https://github.com/user-attachments/assets/29263556-96f0-4dad-8a6b-92566fd71b4c
+
+
+
+Interpolated Video (96 FPS) - On Red Dead Redemption 2
+
+
+
+https://github.com/user-attachments/assets/fc6b7e48-8e86-4955-8b17-53f3de7bc419
 
 
 

@@ -1,0 +1,16 @@
+Video Inference: 
+    Run: python Video_inference.py --input input_path --output output_path --model checkpoint/model.pth --fps_multiplier 2    (or 4)
+
+Image Inference:
+    Change the:
+        img0 = load_image("your_path_to_img01").to(device)
+        img1 = load_image("your_path_to_img02").to(device)
+    Run: python image_inference.py
+
+Data to eval/train:
+    UCF101: Download UCF101 dataset at  (https://drive.google.com/file/d/0B7EVK8r0v71pdHBNdXB6TE1wSTQ/view?resourcekey=0-r6ihCy20h3kbgZ3ZdimPiA)
+    
+    Vimeo90K: Download Vimeo90K dataset at  (http://data.csail.mit.edu/tofu/dataset/vimeo_triplet.zip) or Kaggle (https://www.kaggle.com/datasets/chenshu123/vimeo-triplet)
+
+    MiddleBury: Download MiddleBury OTHER dataset at (https://vision.middlebury.edu/flow/data/comp/zip/other-gt-flow.zip)
+                                                  and (https://vision.middlebury.edu/flow/data/comp/zip/other-gt-interp.zip) (put inp frames and gt frames in same dir)

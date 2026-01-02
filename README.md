@@ -39,10 +39,17 @@ python Video_inference.py \
 Video Demo (Comparison)
 
 Original Video (6 FPS)
-video_demo/one_punch_6fps.mp4
+
+https://github.com/user-attachments/assets/4b13bd06-0757-44c1-aabf-ba682f54e1a7
+
+
 
 Interpolated Video (96 FPS)
-video_demo/one_punch_96fps_interpolated.mp4
+
+
+https://github.com/user-attachments/assets/8073f3aa-6ff9-48ad-a7bb-818471eab434
+
+
 
 The interpolated result demonstrates smoother motion and improved temporal continuity compared to the low-FPS input.
 

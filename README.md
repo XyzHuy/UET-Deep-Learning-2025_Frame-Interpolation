@@ -36,6 +36,10 @@ python Video_Inference.py \
   --fps_multiplier 2   # or 4
 ```
 
+By default, video inference runs the residual U-Net refiner at `--refiner_scale 0.5`
+for a faster no-retraining speed/quality tradeoff. Use `--refiner_scale 1.0` for
+the original full-resolution refiner.
+
 Fast approximate refiner modes can be tested without retraining:
 
 ```bash
@@ -45,6 +49,9 @@ python Video_Inference.py -i input_path -o output_path -m checkpoint/model.pth -
 # Skip the residual U-Net refiner and output the coarse merged frame.
 python Video_Inference.py -i input_path -o output_path -m checkpoint/model.pth --skip_refiner
 ```
+
+FFmpeg output uses a raw video pipe by default, avoiding temporary PNG frame dumps.
+Use `--no_ffmpeg` to fall back to OpenCV `VideoWriter`.
 
 ## Runtime Benchmark
 
@@ -57,12 +64,6 @@ python benchmark_runtime.py \
   --height 256 \
   --width 256 \
   --iters 100
-```
-
-For repeated video inference, `torch.compile` can be tested separately:
-
-```bash
-python benchmark_runtime.py --device cuda --compile --height 256 --width 256
 ```
 
 Video Demo (Comparison)

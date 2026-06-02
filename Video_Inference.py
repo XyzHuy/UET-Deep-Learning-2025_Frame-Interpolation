@@ -4,11 +4,8 @@ import torch.nn.functional as F
 import cv2
 import numpy as np
 import argparse
-from pathlib import Path
 from tqdm import tqdm
 import subprocess
-import tempfile
-import shutil
 import math
 from Model import MainModel
 
@@ -24,8 +21,7 @@ class VideoInterpolator:
         use_cpu_bf16=False,
         channels_last=True,
         refiner_scale=1.0,
-        skip_refiner=False,
-        compile_model=False
+        skip_refiner=False
     ):
         self.device = self.resolve_device(device)
         self.use_fp16 = use_fp16 and self.device.type == 'cuda'
@@ -52,9 +48,6 @@ class VideoInterpolator:
 
         if self.channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)
-
-        if compile_model:
-            self.model = torch.compile(self.model, mode="reduce-overhead")
         
         self.tile_size = tile_size
         self.tile_overlap = tile_overlap
@@ -251,12 +244,37 @@ class VideoInterpolator:
         print(f" Estimated output frames: {total_frames * fps_multiplier}")
         
         if use_ffmpeg:
-            # Use ffmpeg pipe for better compression
             output_path = str(output_path)
-            temp_dir = tempfile.mkdtemp()
-            
+            cmd = [
+                'ffmpeg', '-y',
+                '-loglevel', 'error',
+                '-f', 'rawvideo',
+                '-vcodec', 'rawvideo',
+                '-pix_fmt', 'bgr24',
+                '-s', f'{width}x{height}',
+                '-r', str(new_fps),
+                '-i', '-',
+                '-an',
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', str(crf),
+                '-pix_fmt', 'yuv420p',
+                output_path
+            ]
+
+            print(f"\n Encoding with FFmpeg raw pipe (CRF={crf})...")
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE
+            )
+
+            def write_rgb(frame_rgb):
+                process.stdin.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR).tobytes())
+
+            pbar = None
             try:
-                frame_idx = 0
                 ret, prev_frame = cap.read()
                 
                 if not ret:
@@ -264,40 +282,24 @@ class VideoInterpolator:
                 
                 prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2RGB)
                 
-                # Calculate total output frames
-                total_output_frames = total_frames * fps_multiplier
-                # Save frames to temp directory
                 pbar = tqdm(total=total_frames, desc="Processing", unit="frame", ncols=100)
                 
                 while True:
                     ret, curr_frame = cap.read()
                     
                     if not ret:
-                        # Save last frame
-                        cv2.imwrite(
-                            os.path.join(temp_dir, f"frame_{frame_idx:08d}.png"),
-                            cv2.cvtColor(prev_frame, cv2.COLOR_RGB2BGR)
-                        )
+                        write_rgb(prev_frame)
                         break
                     
                     curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2RGB)
                     
-                    # Save original frame
-                    cv2.imwrite(
-                        os.path.join(temp_dir, f"frame_{frame_idx:08d}.png"),
-                        cv2.cvtColor(prev_frame, cv2.COLOR_RGB2BGR)
-                    )
-                    frame_idx += 1
+                    write_rgb(prev_frame)
                     
                     # Generate intermediate frames
                     if fps_multiplier == 2:
                         # x2: Generate 1 intermediate frame
                         inter_frame = self.interpolate_frame(prev_frame, curr_frame)
-                        cv2.imwrite(
-                            os.path.join(temp_dir, f"frame_{frame_idx:08d}.png"),
-                            cv2.cvtColor(inter_frame, cv2.COLOR_RGB2BGR)
-                        )
-                        frame_idx += 1
+                        write_rgb(inter_frame)
                         
                     elif fps_multiplier == 4:
                         # x4: Generate 3 intermediate frames using recursion
@@ -311,57 +313,30 @@ class VideoInterpolator:
                         last_quarter = self.interpolate_frame(mid_frame, curr_frame)
                         
                         # Lưu theo thứ tự: 0.25 -> 0.5 -> 0.75
-                        cv2.imwrite(
-                            os.path.join(temp_dir, f"frame_{frame_idx:08d}.png"),
-                            cv2.cvtColor(first_quarter, cv2.COLOR_RGB2BGR)
-                        )
-                        frame_idx += 1
-                        
-                        cv2.imwrite(
-                            os.path.join(temp_dir, f"frame_{frame_idx:08d}.png"),
-                            cv2.cvtColor(mid_frame, cv2.COLOR_RGB2BGR)
-                        )
-                        frame_idx += 1
-                        
-                        cv2.imwrite(
-                            os.path.join(temp_dir, f"frame_{frame_idx:08d}.png"),
-                            cv2.cvtColor(last_quarter, cv2.COLOR_RGB2BGR)
-                        )
-                        frame_idx += 1
+                        write_rgb(first_quarter)
+                        write_rgb(mid_frame)
+                        write_rgb(last_quarter)
                     
                     prev_frame = curr_frame
                     pbar.update(1)
-                
-                pbar.close()
-                cap.release()
-                
-                # Encode with ffmpeg
-                print(f"\n Encoding with FFmpeg (CRF={crf})...")
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-framerate', str(new_fps),
-                    '-i', os.path.join(temp_dir, 'frame_%08d.png'),
-                    '-c:v', 'libx264',
-                    '-preset', 'medium',
-                    '-crf', str(crf),
-                    '-pix_fmt', 'yuv420p',
-                    output_path
-                ]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    print(f"FFmpeg warning/error:\n{result.stderr}")
-                
+
+                process.stdin.close()
+                stderr = process.stderr.read().decode('utf-8', errors='replace')
+                return_code = process.wait()
+                if return_code != 0:
+                    raise RuntimeError(f"FFmpeg failed with code {return_code}:\n{stderr}")
+
                 # Get output file size
                 output_size = os.path.getsize(output_path) / (1024 * 1024)
                 print(f"Video saved: {output_path}")
                 print(f"Output size: {output_size:.2f} MB")
                 
             finally:
-                # Cleanup temp files
-                print("🧹 Cleaning up temporary files...")
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                if pbar is not None:
+                    pbar.close()
+                cap.release()
+                if process.poll() is None:
+                    process.kill()
         
         else:
             # Direct cv2 VideoWriter (simpler but larger file)
@@ -446,8 +421,6 @@ def main():
                         help='Skip residual U-Net refiner and output the coarse merged frame')
     parser.add_argument('--no_fp16', action='store_true',
                         help='Disable FP16 (use FP32)')
-    parser.add_argument('--compile', action='store_true',
-                        help='Compile the model with torch.compile (slower startup, may help repeated fixed-size inference on CPU/CUDA)')
     parser.add_argument('--no_ffmpeg', action='store_true',
                         help='Disable ffmpeg encoding (use cv2 instead)')
     parser.add_argument('--crf', type=int, default=18,
@@ -474,8 +447,7 @@ def main():
         use_cpu_bf16=args.cpu_bf16,
         channels_last=not args.no_channels_last,
         refiner_scale=args.refiner_scale,
-        skip_refiner=args.skip_refiner,
-        compile_model=args.compile
+        skip_refiner=args.skip_refiner
     )
     
     # Process video

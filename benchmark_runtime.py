@@ -11,14 +11,14 @@ def sync_if_cuda(device):
         torch.cuda.synchronize()
 
 
-def timed_forward(model, img0, img1, device, use_fp16, iters):
+def timed_forward(model, img0, img1, device, use_fp16, iters, model_kwargs):
     if device.type == "cuda":
         starter = torch.cuda.Event(enable_timing=True)
         ender = torch.cuda.Event(enable_timing=True)
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_fp16):
             starter.record()
             for _ in range(iters):
-                model(img0, img1)
+                model(img0, img1, **model_kwargs)
             ender.record()
         torch.cuda.synchronize()
         return starter.elapsed_time(ender) / iters
@@ -26,7 +26,7 @@ def timed_forward(model, img0, img1, device, use_fp16, iters):
     start = time.perf_counter()
     with torch.inference_mode():
         for _ in range(iters):
-            model(img0, img1)
+            model(img0, img1, **model_kwargs)
     return (time.perf_counter() - start) * 1000.0 / iters
 
 
@@ -45,7 +45,7 @@ def add_timing_wrapper(owner, attr_name, label, times, counts, device):
     setattr(owner, attr_name, wrapped)
 
 
-def benchmark_breakdown(model, img0, img1, device, use_fp16, iters):
+def benchmark_breakdown(model, img0, img1, device, use_fp16, iters, model_kwargs):
     times = {}
     counts = {}
 
@@ -57,7 +57,7 @@ def benchmark_breakdown(model, img0, img1, device, use_fp16, iters):
 
     with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_fp16):
         for _ in range(iters):
-            model(img0, img1)
+            model(img0, img1, **model_kwargs)
 
     sync_if_cuda(device)
     rows = []
@@ -75,7 +75,9 @@ def main():
     parser.add_argument("--iters", type=int, default=100, help="Measured iterations")
     parser.add_argument("--device", default="cuda", help="cuda or cpu")
     parser.add_argument("--fp32", action="store_true", help="Disable FP16 autocast/model weights")
-    parser.add_argument("--compile", action="store_true", help="Use torch.compile for total-runtime measurement")
+    parser.add_argument("--refiner_scale", type=float, default=0.5, choices=[1.0, 0.5, 0.25],
+                        help="Run refiner at lower resolution and upsample its residual")
+    parser.add_argument("--skip_refiner", action="store_true", help="Skip the residual U-Net refiner")
     args = parser.parse_args()
 
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
@@ -104,26 +106,30 @@ def main():
         img0 = img0.to(memory_format=torch.channels_last)
         img1 = img1.to(memory_format=torch.channels_last)
 
+    model_kwargs = {
+        "refiner_scale": args.refiner_scale,
+        "skip_refiner": args.skip_refiner,
+    }
+
     with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_fp16):
         for _ in range(args.warmup):
-            model(img0, img1)
+            model(img0, img1, **model_kwargs)
     sync_if_cuda(device)
 
-    measured_model = torch.compile(model, mode="reduce-overhead") if args.compile else model
-    avg_ms = timed_forward(measured_model, img0, img1, device, use_fp16, args.iters)
+    avg_ms = timed_forward(model, img0, img1, device, use_fp16, args.iters, model_kwargs)
 
     print(f"device: {device}")
     if device.type == "cuda":
         print(f"gpu: {torch.cuda.get_device_name(0)}")
     print(f"shape: 1x3x{args.height}x{args.width}")
     print(f"fp16: {use_fp16}")
-    print(f"compiled: {args.compile}")
+    print(f"refiner_scale: {args.refiner_scale}")
+    print(f"skip_refiner: {args.skip_refiner}")
     print(f"avg_forward_ms: {avg_ms:.3f}")
 
-    if not args.compile:
-        print("\nbreakdown_ms_per_forward:")
-        for label, ms_per_forward, calls in benchmark_breakdown(model, img0, img1, device, use_fp16, args.iters):
-            print(f"  {label}: {ms_per_forward:.3f} ms ({calls} calls)")
+    print("\nbreakdown_ms_per_forward:")
+    for label, ms_per_forward, calls in benchmark_breakdown(model, img0, img1, device, use_fp16, args.iters, model_kwargs):
+        print(f"  {label}: {ms_per_forward:.3f} ms ({calls} calls)")
 
 
 if __name__ == "__main__":

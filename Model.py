@@ -204,25 +204,22 @@ class ContextAwareRefiner(nn.Module):
         d1 = self.down1(x)
         
         # Context 1 processing
-        c1_concat = torch.cat([c1_0, c1_1], dim=1)
+        c1_concat = self.proj_c1(torch.cat([c1_0, c1_1], dim=1))
         c1_concat = F.interpolate(c1_concat, size=d1.shape[2:], mode='bilinear', align_corners=False)
-        c1_concat = self.proj_c1(c1_concat)
         
         # Encoder 2
         d2 = self.down2(torch.cat([d1, c1_concat], dim=1))
         
         # Context 2 processing
-        c2_concat = torch.cat([c2_0, c2_1], dim=1)
+        c2_concat = self.proj_c2(torch.cat([c2_0, c2_1], dim=1))
         c2_concat = F.interpolate(c2_concat, size=d2.shape[2:], mode='bilinear', align_corners=False)
-        c2_concat = self.proj_c2(c2_concat)
         
         # Encoder 3
         d3 = self.down3(torch.cat([d2, c2_concat], dim=1))
         
         # Context 3 processing
-        c3_concat = torch.cat([c3_0, c3_1], dim=1)
+        c3_concat = self.proj_c3(torch.cat([c3_0, c3_1], dim=1))
         c3_concat = F.interpolate(c3_concat, size=d3.shape[2:], mode='bilinear', align_corners=False)
-        c3_concat = self.proj_c3(c3_concat)
         
         # Neck
         neck = self.neck(torch.cat([d3, c3_concat], dim=1))
@@ -298,6 +295,65 @@ class MainModel(nn.Module):
             warped_img += warped_scale
         
         return warped_img / len(self.scales)
+
+    def build_refine_input(
+        self,
+        img0,
+        img1,
+        warped_img0,
+        warped_img1,
+        merged,
+        weights_fwd_full,
+        weights_bwd_full,
+        visibility,
+        refiner_scale
+    ):
+        base_inputs = [img0, img1, warped_img0, warped_img1, merged, visibility]
+
+        if refiner_scale == 1.0:
+            return torch.cat([
+                img0,
+                img1,
+                warped_img0,
+                warped_img1,
+                merged,
+                weights_fwd_full,
+                weights_bwd_full,
+                visibility
+            ], dim=1)
+
+        low_size = (
+            max(1, int(round(merged.shape[2] * refiner_scale))),
+            max(1, int(round(merged.shape[3] * refiner_scale)))
+        )
+
+        appearance_low = F.interpolate(
+            torch.cat(base_inputs, dim=1),
+            size=low_size,
+            mode='bilinear',
+            align_corners=False
+        )
+        weights_fwd_low = F.interpolate(
+            weights_fwd_full,
+            size=low_size,
+            mode='bilinear',
+            align_corners=False
+        )
+        weights_bwd_low = F.interpolate(
+            weights_bwd_full,
+            size=low_size,
+            mode='bilinear',
+            align_corners=False
+        )
+
+        return torch.cat([
+            appearance_low[:, 0:6],
+            appearance_low[:, 6:12],
+            appearance_low[:, 12:15],
+            weights_fwd_low,
+            weights_bwd_low,
+            appearance_low[:, 15:16]
+        ], dim=1)
     
     def forward(self, img0, img1, gt=None, refiner_scale=1.0, skip_refiner=False):
         # STUDENT BRANCH
@@ -345,33 +401,28 @@ class MainModel(nn.Module):
             vis_full_t = F.interpolate(vis_t, scale_factor=4, mode='bilinear', align_corners=False)
             merged_teacher = vis_full_t * w_img0_t + (1 - vis_full_t) * w_img1_t
     
-        refine_input = torch.cat([
-            img0, img1,                 
-            warped_img0_s, warped_img1_s, 
-            merged_student,             
-            all_weights_fwd_full,      
-            all_weights_bwd_full,       
-            visibility_full_s           
-        ], dim=1)
-        
         if skip_refiner:
             residual = torch.zeros_like(merged_student)
-        elif refiner_scale != 1.0:
-            refine_input_low = F.interpolate(
-                refine_input,
-                scale_factor=refiner_scale,
-                mode='bilinear',
-                align_corners=False
+        else:
+            refine_input = self.build_refine_input(
+                img0,
+                img1,
+                warped_img0_s,
+                warped_img1_s,
+                merged_student,
+                all_weights_fwd_full,
+                all_weights_bwd_full,
+                visibility_full_s,
+                refiner_scale
             )
-            residual = self.refiner(refine_input_low, context0_s, context1_s)
+            residual = self.refiner(refine_input, context0_s, context1_s)
+        if not skip_refiner and refiner_scale != 1.0:
             residual = F.interpolate(
                 residual,
                 size=merged_student.shape[2:],
                 mode='bilinear',
                 align_corners=False
             )
-        else:
-            residual = self.refiner(refine_input, context0_s, context1_s)
         pred_frame = torch.clamp(merged_student + residual, 0, 1)
         
         return pred_frame, {

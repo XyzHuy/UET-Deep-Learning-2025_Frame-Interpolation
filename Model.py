@@ -299,7 +299,7 @@ class MainModel(nn.Module):
         
         return warped_img / len(self.scales)
     
-    def forward(self, img0, img1, gt=None):
+    def forward(self, img0, img1, gt=None, refiner_scale=1.0, skip_refiner=False):
         # STUDENT BRANCH
         context0_s = self.context_extractor_student(img0)
         context1_s = self.context_extractor_student(img1)
@@ -354,7 +354,24 @@ class MainModel(nn.Module):
             visibility_full_s           
         ], dim=1)
         
-        residual = self.refiner(refine_input, context0_s, context1_s)
+        if skip_refiner:
+            residual = torch.zeros_like(merged_student)
+        elif refiner_scale != 1.0:
+            refine_input_low = F.interpolate(
+                refine_input,
+                scale_factor=refiner_scale,
+                mode='bilinear',
+                align_corners=False
+            )
+            residual = self.refiner(refine_input_low, context0_s, context1_s)
+            residual = F.interpolate(
+                residual,
+                size=merged_student.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+        else:
+            residual = self.refiner(refine_input, context0_s, context1_s)
         pred_frame = torch.clamp(merged_student + residual, 0, 1)
         
         return pred_frame, {

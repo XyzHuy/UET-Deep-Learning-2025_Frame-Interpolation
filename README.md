@@ -36,6 +36,16 @@ python Video_Inference.py \
   --fps_multiplier 2   # or 4
 ```
 
+Fast approximate refiner modes can be tested without retraining:
+
+```bash
+# Run the residual U-Net refiner at half resolution, then upsample the residual.
+python Video_Inference.py -i input_path -o output_path -m checkpoint/model.pth --refiner_scale 0.5
+
+# Skip the residual U-Net refiner and output the coarse merged frame.
+python Video_Inference.py -i input_path -o output_path -m checkpoint/model.pth --skip_refiner
+```
+
 ## Runtime Benchmark
 
 Measure model-only inference runtime on CUDA:

@@ -23,6 +23,8 @@ class VideoInterpolator:
         use_fp16=True,
         use_cpu_bf16=False,
         channels_last=True,
+        refiner_scale=1.0,
+        skip_refiner=False,
         compile_model=False
     ):
         self.device = self.resolve_device(device)
@@ -56,11 +58,14 @@ class VideoInterpolator:
         
         self.tile_size = tile_size
         self.tile_overlap = tile_overlap
+        self.refiner_scale = refiner_scale
+        self.skip_refiner = skip_refiner
         
         print(f"Model loaded on {self.device}")
         print(f"FP16: {'Enabled' if self.use_fp16 else 'Disabled'}")
         print(f"CPU BF16: {'Enabled' if self.use_cpu_bf16 else 'Disabled'}")
         print(f"Channels last: {'Enabled' if self.channels_last else 'Disabled'}")
+        print(f"Refiner: {'Skipped' if self.skip_refiner else f'scale x{self.refiner_scale:g}'}")
         print(f"Tile processing: {'Auto' if tile_size is None else f'{tile_size}x{tile_size}'}")
 
     @staticmethod
@@ -131,7 +136,12 @@ class VideoInterpolator:
                 if tile_size and (img0.shape[2] > tile_size or img0.shape[3] > tile_size):
                     pred = self.tile_inference(img0, img1, tile_size)
                 else:
-                    pred = self.model(img0, img1)[0]
+                    pred = self.model(
+                        img0,
+                        img1,
+                        refiner_scale=self.refiner_scale,
+                        skip_refiner=self.skip_refiner
+                    )[0]
             
             # Convert back to FP32
             if self.use_fp16 or self.use_cpu_bf16:
@@ -188,7 +198,12 @@ class VideoInterpolator:
                 tile1 = img1[:, :, y_start:y_end, x_start:x_end]
                 
                 # Inference
-                pred_tile = self.model(tile0, tile1)[0]
+                pred_tile = self.model(
+                    tile0,
+                    tile1,
+                    refiner_scale=self.refiner_scale,
+                    skip_refiner=self.skip_refiner
+                )[0]
                 
                 # Accumulate with blending weights
                 output[:, :, y_start:y_end, x_start:x_end] += pred_tile * blend
@@ -425,6 +440,10 @@ def main():
                         help='Use CPU bfloat16 autocast. Test this on your CPU; it can be faster only on CPUs with good BF16 support')
     parser.add_argument('--no_channels_last', action='store_true',
                         help='Disable channels-last memory format for inference')
+    parser.add_argument('--refiner_scale', type=float, default=0.5, choices=[1.0, 0.5, 0.25],
+                        help='Run refiner at lower resolution and upsample its residual. 1.0 keeps original behavior')
+    parser.add_argument('--skip_refiner', action='store_true',
+                        help='Skip residual U-Net refiner and output the coarse merged frame')
     parser.add_argument('--no_fp16', action='store_true',
                         help='Disable FP16 (use FP32)')
     parser.add_argument('--compile', action='store_true',
@@ -454,6 +473,8 @@ def main():
         use_fp16=not args.no_fp16,
         use_cpu_bf16=args.cpu_bf16,
         channels_last=not args.no_channels_last,
+        refiner_scale=args.refiner_scale,
+        skip_refiner=args.skip_refiner,
         compile_model=args.compile
     )
     

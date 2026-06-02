@@ -5,6 +5,12 @@ import matplotlib.pyplot as plt
 from Model import MainModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
 model = MainModel(scales=[1,2,4,8,16,32]).to(device)
 
 checkpoint = torch.load(
@@ -17,6 +23,9 @@ model.load_state_dict(checkpoint['model_state_dict'], strict=True)
 
 model.eval()
 
+if torch.cuda.is_available():
+    model = model.to(memory_format=torch.channels_last)
+
 def load_image(path, size=None):
     img = Image.open(path).convert("RGB")
     if size is not None:
@@ -28,7 +37,11 @@ def load_image(path, size=None):
 img0 = load_image("image_demo/0.webp").to(device)
 img1 = load_image("image_demo/2.webp").to(device)
 
-with torch.no_grad():
+if torch.cuda.is_available():
+    img0 = img0.to(memory_format=torch.channels_last)
+    img1 = img1.to(memory_format=torch.channels_last)
+
+with torch.inference_mode(), torch.autocast(device_type='cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
     pred, aux = model(img0, img1)
 
 def show(tensor, title):

@@ -14,12 +14,18 @@ from Model import MainModel
 
             
 class VideoInterpolator:
-    def __init__(self, model_path, device='cuda', tile_size=None, tile_overlap=32, use_fp16=True):
+    def __init__(self, model_path, device='cuda', tile_size=None, tile_overlap=32, use_fp16=True, compile_model=False):
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.use_fp16 = use_fp16 and torch.cuda.is_available()
+        self.channels_last = torch.cuda.is_available()
+
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
         
         # Load model
-        self.model = MainModel(scales=[1,2,4,8,16,32]).to(device)
+        self.model = MainModel(scales=[1,2,4,8,16,32]).to(self.device)
         checkpoint = torch.load(model_path, map_location=self.device)
         
         
@@ -28,6 +34,12 @@ class VideoInterpolator:
 
         if self.use_fp16:
             self.model.half()
+
+        if self.channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
+
+        if compile_model:
+            self.model = torch.compile(self.model, mode="reduce-overhead")
         
         self.tile_size = tile_size
         self.tile_overlap = tile_overlap
@@ -57,18 +69,22 @@ class VideoInterpolator:
         return img, (h, w)
     
     def interpolate_frame(self, frame0, frame1):
-        with torch.no_grad():
+        with torch.inference_mode():
             # Convert to tensor
             img0 = torch.from_numpy(frame0).permute(2, 0, 1).float().unsqueeze(0) / 255.0
             img1 = torch.from_numpy(frame1).permute(2, 0, 1).float().unsqueeze(0) / 255.0
             
-            img0 = img0.to(self.device)
-            img1 = img1.to(self.device)
+            img0 = img0.to(self.device, non_blocking=True)
+            img1 = img1.to(self.device, non_blocking=True)
             
             # Convert to FP16 if enabled
             if self.use_fp16:
                 img0 = img0.half()
                 img1 = img1.half()
+
+            if self.channels_last:
+                img0 = img0.to(memory_format=torch.channels_last)
+                img1 = img1.to(memory_format=torch.channels_last)
             
             # Pad to multiple of 32
             img0, orig_size = self.pad_to_multiple(img0)
@@ -80,10 +96,11 @@ class VideoInterpolator:
                 tile_size = self.auto_tile_size(orig_size[0], orig_size[1])
             
             # Tile-based processing for high-res
-            if tile_size and (img0.shape[2] > tile_size or img0.shape[3] > tile_size):
-                pred = self.tile_inference(img0, img1, tile_size)
-            else:
-                pred = self.model(img0, img1)[0]
+            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_fp16):
+                if tile_size and (img0.shape[2] > tile_size or img0.shape[3] > tile_size):
+                    pred = self.tile_inference(img0, img1, tile_size)
+                else:
+                    pred = self.model(img0, img1)[0]
             
             # Convert back to FP32
             if self.use_fp16:
@@ -371,6 +388,8 @@ def main():
                         help='Device (cuda or cpu)')
     parser.add_argument('--no_fp16', action='store_true',
                         help='Disable FP16 (use FP32)')
+    parser.add_argument('--compile', action='store_true',
+                        help='Compile the model with torch.compile (slower startup, faster repeated inference on supported GPUs)')
     parser.add_argument('--no_ffmpeg', action='store_true',
                         help='Disable ffmpeg encoding (use cv2 instead)')
     parser.add_argument('--crf', type=int, default=18,
@@ -384,7 +403,8 @@ def main():
         device=args.device,
         tile_size=args.tile_size,
         tile_overlap=args.tile_overlap,
-        use_fp16=not args.no_fp16
+        use_fp16=not args.no_fp16,
+        compile_model=args.compile
     )
     
     # Process video

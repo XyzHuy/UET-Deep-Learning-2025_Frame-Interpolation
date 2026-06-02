@@ -24,15 +24,22 @@ def conv_dw_pw(in_ch, out_ch):
 def safe_shift(x, dy, dx):
     if dy == 0 and dx == 0:
         return x
-    shifted_x = torch.roll(x, shifts=(dy, dx), dims=(2, 3))
-    if dy > 0:
-        shifted_x[:, :, :dy, :] = 0
-    elif dy < 0:
-        shifted_x[:, :, dy:, :] = 0
-    if dx > 0:
-        shifted_x[:, :, :, :dx] = 0
-    elif dx < 0:
-        shifted_x[:, :, :, dx:] = 0
+
+    _, _, h, w = x.shape
+    shifted_x = x.new_zeros(x.shape)
+
+    dst_y0 = max(dy, 0)
+    dst_y1 = h + min(dy, 0)
+    src_y0 = max(-dy, 0)
+    src_y1 = h - max(dy, 0)
+
+    dst_x0 = max(dx, 0)
+    dst_x1 = w + min(dx, 0)
+    src_x0 = max(-dx, 0)
+    src_x1 = w - max(dx, 0)
+
+    if dst_y0 < dst_y1 and dst_x0 < dst_x1:
+        shifted_x[:, :, dst_y0:dst_y1, dst_x0:dst_x1] = x[:, :, src_y0:src_y1, src_x0:src_x1]
     return shifted_x
 
 def get_directions(D):
@@ -231,6 +238,7 @@ class MainModel(nn.Module):
     def __init__(self, scales=[1,2,4,8,16,32]):
         super().__init__()
         self.scales = scales
+        self.directions_by_scale = {scale: get_directions(scale) for scale in scales}
         num_scales = len(scales)
         
         self.num_directions = len(get_directions(1)) 
@@ -259,25 +267,33 @@ class MainModel(nn.Module):
         
         self.refiner = ContextAwareRefiner(base_in_ch=self.refiner_in_ch, out_ch=3)
         
-    def apply_shift(self, img, weights_list):
+    def apply_shift(self, img, weights_list, weights_full=None):
+        if weights_full is None:
+            weights_full = F.interpolate(
+                torch.cat(weights_list, dim=1),
+                scale_factor=4,
+                mode='bilinear',
+                align_corners=False
+            )
+
         shift_cache = {}
-        warped_img = 0
-        
+        warped_img = img.new_zeros(img.shape)
+        offset = 0
 
         for scale, weights in zip(self.scales, weights_list):
-            directions = get_directions(scale)
+            directions = self.directions_by_scale[scale]
             if weights.shape[1] != len(directions):
                 raise RuntimeError(f"Mismatch: Weights ch={weights.shape[1]} vs Directions={len(directions)}")
 
-            weights_full = F.interpolate(weights, scale_factor=4, 
-                                         mode='bilinear', align_corners=False)
-            
-            warped_scale = 0
+            weights_scale = weights_full[:, offset:offset + self.num_directions, ...]
+            offset += self.num_directions
+
+            warped_scale = img.new_zeros(img.shape)
             for i, (dy, dx) in enumerate(directions):
                 shift_key = (dy, dx)
                 if shift_key not in shift_cache:
                     shift_cache[shift_key] = safe_shift(img, dy, dx)
-                warped_scale += weights_full[:, i:i+1, ...] * shift_cache[shift_key]
+                warped_scale += weights_scale[:, i:i+1, ...] * shift_cache[shift_key]
             
             warped_img += warped_scale
         
@@ -293,8 +309,13 @@ class MainModel(nn.Module):
         f1_s = self.flow_encoder_student(c2_1_s)
          
         weight_list_fwd_s, weight_list_bwd_s, visibility_s = self.shift_flow_student(f0_s, f1_s)
-        warped_img0_s = self.apply_shift(img0, weight_list_fwd_s)
-        warped_img1_s = self.apply_shift(img1, weight_list_bwd_s)
+        all_weights_fwd = torch.cat(weight_list_fwd_s, dim=1)
+        all_weights_bwd = torch.cat(weight_list_bwd_s, dim=1)
+        all_weights_fwd_full = F.interpolate(all_weights_fwd, scale_factor=4, mode='bilinear', align_corners=False)
+        all_weights_bwd_full = F.interpolate(all_weights_bwd, scale_factor=4, mode='bilinear', align_corners=False)
+
+        warped_img0_s = self.apply_shift(img0, weight_list_fwd_s, all_weights_fwd_full)
+        warped_img1_s = self.apply_shift(img1, weight_list_bwd_s, all_weights_bwd_full)
         
         visibility_full_s = F.interpolate(visibility_s, scale_factor=4, mode='bilinear', align_corners=False)
         merged_student = visibility_full_s * warped_img0_s + (1 - visibility_full_s) * warped_img1_s
@@ -323,12 +344,6 @@ class MainModel(nn.Module):
             w_img1_t = self.apply_shift(img1, weight_list_bwd_t)
             vis_full_t = F.interpolate(vis_t, scale_factor=4, mode='bilinear', align_corners=False)
             merged_teacher = vis_full_t * w_img0_t + (1 - vis_full_t) * w_img1_t
-        
-        all_weights_fwd = torch.cat(weight_list_fwd_s, dim=1)
-        all_weights_bwd = torch.cat(weight_list_bwd_s, dim=1)
-        
-        all_weights_fwd_full = F.interpolate(all_weights_fwd, scale_factor=4, mode='bilinear', align_corners=False)
-        all_weights_bwd_full = F.interpolate(all_weights_bwd, scale_factor=4, mode='bilinear', align_corners=False)
     
         refine_input = torch.cat([
             img0, img1,                 

@@ -29,11 +29,30 @@ This work is submitted as a **final-term assignment** (5-page paper).
 Run inference on a video with frame rate interpolation:
 
 ```bash
-python Video_inference.py \
+python Video_Inference.py \
   --input input_path \
   --output output_path \
   --model checkpoint/model.pth \
   --fps_multiplier 2   # or 4
+```
+
+## Runtime Benchmark
+
+Measure model-only inference runtime on CUDA:
+
+```bash
+python benchmark_runtime.py \
+  --device cuda \
+  --model checkpoint/model.pth \
+  --height 256 \
+  --width 256 \
+  --iters 100
+```
+
+For repeated video inference, `torch.compile` can be tested separately:
+
+```bash
+python benchmark_runtime.py --device cuda --compile --height 256 --width 256
 ```
 
 Video Demo (Comparison)

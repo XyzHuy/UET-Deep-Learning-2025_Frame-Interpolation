@@ -14,15 +14,28 @@ from Model import MainModel
 
             
 class VideoInterpolator:
-    def __init__(self, model_path, device='cuda', tile_size=None, tile_overlap=32, use_fp16=True, compile_model=False):
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
-        self.use_fp16 = use_fp16 and torch.cuda.is_available()
-        self.channels_last = torch.cuda.is_available()
+    def __init__(
+        self,
+        model_path,
+        device='auto',
+        tile_size=None,
+        tile_overlap=32,
+        use_fp16=True,
+        use_cpu_bf16=False,
+        channels_last=True,
+        compile_model=False
+    ):
+        self.device = self.resolve_device(device)
+        self.use_fp16 = use_fp16 and self.device.type == 'cuda'
+        self.use_cpu_bf16 = use_cpu_bf16 and self.device.type == 'cpu'
+        self.channels_last = channels_last and self.device.type in ('cuda', 'cpu')
 
-        if torch.cuda.is_available():
+        if self.device.type == 'cuda':
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
+        else:
+            torch.backends.mkldnn.enabled = True
         
         # Load model
         self.model = MainModel(scales=[1,2,4,8,16,32]).to(self.device)
@@ -46,7 +59,23 @@ class VideoInterpolator:
         
         print(f"Model loaded on {self.device}")
         print(f"FP16: {'Enabled' if self.use_fp16 else 'Disabled'}")
+        print(f"CPU BF16: {'Enabled' if self.use_cpu_bf16 else 'Disabled'}")
+        print(f"Channels last: {'Enabled' if self.channels_last else 'Disabled'}")
         print(f"Tile processing: {'Auto' if tile_size is None else f'{tile_size}x{tile_size}'}")
+
+    @staticmethod
+    def resolve_device(device):
+        device = device.lower()
+        if device == 'auto':
+            return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if device == 'cuda':
+            if not torch.cuda.is_available():
+                print("CUDA requested but not available. Falling back to CPU.")
+                return torch.device('cpu')
+            return torch.device('cuda')
+        if device == 'cpu':
+            return torch.device('cpu')
+        raise ValueError(f"Unsupported device: {device}. Use auto, cuda, or cpu.")
     
     def auto_tile_size(self, height, width):
         pixels = height * width
@@ -74,21 +103,21 @@ class VideoInterpolator:
             img0 = torch.from_numpy(frame0).permute(2, 0, 1).float().unsqueeze(0) / 255.0
             img1 = torch.from_numpy(frame1).permute(2, 0, 1).float().unsqueeze(0) / 255.0
             
-            img0 = img0.to(self.device, non_blocking=True)
-            img1 = img1.to(self.device, non_blocking=True)
+            img0 = img0.to(self.device, non_blocking=self.device.type == 'cuda')
+            img1 = img1.to(self.device, non_blocking=self.device.type == 'cuda')
             
             # Convert to FP16 if enabled
             if self.use_fp16:
                 img0 = img0.half()
                 img1 = img1.half()
 
-            if self.channels_last:
-                img0 = img0.to(memory_format=torch.channels_last)
-                img1 = img1.to(memory_format=torch.channels_last)
-            
             # Pad to multiple of 32
             img0, orig_size = self.pad_to_multiple(img0)
             img1, _ = self.pad_to_multiple(img1)
+
+            if self.channels_last:
+                img0 = img0.contiguous(memory_format=torch.channels_last)
+                img1 = img1.contiguous(memory_format=torch.channels_last)
             
             # Auto-detect tile size 
             tile_size = self.tile_size
@@ -96,14 +125,16 @@ class VideoInterpolator:
                 tile_size = self.auto_tile_size(orig_size[0], orig_size[1])
             
             # Tile-based processing for high-res
-            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_fp16):
+            autocast_enabled = self.use_fp16 or self.use_cpu_bf16
+            autocast_dtype = torch.float16 if self.device.type == 'cuda' else torch.bfloat16
+            with torch.autocast(device_type=self.device.type, dtype=autocast_dtype, enabled=autocast_enabled):
                 if tile_size and (img0.shape[2] > tile_size or img0.shape[3] > tile_size):
                     pred = self.tile_inference(img0, img1, tile_size)
                 else:
                     pred = self.model(img0, img1)[0]
             
             # Convert back to FP32
-            if self.use_fp16:
+            if self.use_fp16 or self.use_cpu_bf16:
                 pred = pred.float()
             
             # Crop back to original size
@@ -132,9 +163,7 @@ class VideoInterpolator:
         weight_map = torch.zeros_like(img0)
         
         # Create gaussian blend weights
-        blend = torch.ones(1, 1, tile_size, tile_size, device=self.device)
-        if self.use_fp16:
-            blend = blend.half()
+        blend = torch.ones(1, 1, tile_size, tile_size, device=self.device, dtype=img0.dtype)
         
         # Smooth fade at edges
         fade = overlap // 2
@@ -369,7 +398,7 @@ class VideoInterpolator:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Video Frame Interpolation - Optimized for RTX 4050')
+    parser = argparse.ArgumentParser(description='Video Frame Interpolation')
     parser.add_argument('--input', '-i', type=str, required=True,
                         help='Input video path')
     parser.add_argument('--output', '-o', type=str, required=True,
@@ -381,21 +410,40 @@ def main():
     parser.add_argument('--output_fps', type=float, default=None,
                         help='Custom output FPS (overrides multiplier)')
     parser.add_argument('--tile_size', type=int, default=None,
-                        help='Manual tile size (None=auto detect)')
+                        help='Manual tile size (None=auto detect)') 
     parser.add_argument('--tile_overlap', type=int, default=32,
                         help='Tile overlap size')
-    parser.add_argument('--device', type=str, default='cuda',
-                        help='Device (cuda or cpu)')
+    parser.add_argument('--device', type=str, default='cuda', choices=['auto', 'cuda', 'cpu'],
+                        help='Device mode: auto, cuda, or cpu')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Shortcut for --device cpu')
+    parser.add_argument('--cpu_threads', type=int, default=None,
+                        help='Number of CPU threads for PyTorch inference')
+    parser.add_argument('--cpu_interop_threads', type=int, default=None,
+                        help='Number of PyTorch inter-op CPU threads')
+    parser.add_argument('--cpu_bf16', action='store_true',
+                        help='Use CPU bfloat16 autocast. Test this on your CPU; it can be faster only on CPUs with good BF16 support')
+    parser.add_argument('--no_channels_last', action='store_true',
+                        help='Disable channels-last memory format for inference')
     parser.add_argument('--no_fp16', action='store_true',
                         help='Disable FP16 (use FP32)')
     parser.add_argument('--compile', action='store_true',
-                        help='Compile the model with torch.compile (slower startup, faster repeated inference on supported GPUs)')
+                        help='Compile the model with torch.compile (slower startup, may help repeated fixed-size inference on CPU/CUDA)')
     parser.add_argument('--no_ffmpeg', action='store_true',
                         help='Disable ffmpeg encoding (use cv2 instead)')
     parser.add_argument('--crf', type=int, default=18,
                         help='FFmpeg CRF quality (18=high, 23=default, 28=lower)')
     
     args = parser.parse_args()
+
+    if args.cpu:
+        args.device = 'cpu'
+
+    if args.cpu_threads is not None:
+        torch.set_num_threads(args.cpu_threads)
+
+    if args.cpu_interop_threads is not None:
+        torch.set_num_interop_threads(args.cpu_interop_threads)
     
     # Initialize interpolator
     interpolator = VideoInterpolator(
@@ -404,6 +452,8 @@ def main():
         tile_size=args.tile_size,
         tile_overlap=args.tile_overlap,
         use_fp16=not args.no_fp16,
+        use_cpu_bf16=args.cpu_bf16,
+        channels_last=not args.no_channels_last,
         compile_model=args.compile
     )
     

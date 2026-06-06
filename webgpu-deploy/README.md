@@ -15,13 +15,6 @@ The model is feasible to export to ONNX for fixed input sizes. The current check
 - refiner: `refiner_scale=0.5`
 - ONNX size: about 22 MB
 
-Two model changes were needed:
-
-- `safe_shift` now uses `pad` + `slice` instead of in-place slice assignment.
-- low-resolution refiner resize now uses fixed `scale_factor`, which traces cleanly.
-
-Browser WebGPU is a good first target for image-pair interpolation and short experiments. Full video interpolation in the browser is possible but should be treated as phase 2 because decoding, recursive x16 frame generation, memory pressure, and MP4 encoding are bigger problems than the model call itself. The backend path is the practical first version for video.
-
 References:
 
 - ONNX Runtime WebGPU docs: https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html
@@ -41,8 +34,6 @@ python3 webgpu-deploy/export_onnx.py \
   --verify
 ```
 
-For larger browser exports, prefer fixed sizes such as `512x512` or `768x432` and benchmark memory before deploying. Dynamic height/width export is available with `--dynamic`, but fixed shapes are safer for ONNX Runtime WebGPU.
-
 ## Frontend
 
 Use Node.js 18 or newer.
@@ -53,7 +44,6 @@ npm install
 npm run dev
 ```
 
-Deploy `frontend/` to Cloudflare Pages, Vercel, or Netlify. If the host complains about large static files, move `model.onnx` to Hugging Face Hub, GitHub Release, or R2, then set the model URL in the UI.
 
 Build command:
 

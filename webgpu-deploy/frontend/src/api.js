@@ -39,42 +39,10 @@ export async function releaseGpuMemory(baseUrl = DEFAULT_BACKEND_URL) {
   return response.json();
 }
 
-export async function profileVideoWithBackend({
-  file,
-  demoVideo,
-  batchSizes,
-  tileSize,
-  refinerScale,
-  skipRefiner,
-  baseUrl = DEFAULT_BACKEND_URL,
-}) {
-  const formData = new FormData();
-  if (file) formData.append("file", file);
-  if (demoVideo) formData.append("demo_video", demoVideo);
-  formData.append("batch_sizes", batchSizes);
-  if (tileSize !== "auto") formData.append("tile_size", String(tileSize));
-  formData.append("refiner_scale", String(refinerScale));
-  formData.append("skip_refiner", String(skipRefiner));
-
-  const response = await fetch(`${baseUrl}/api/profile/video`, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Backend returned ${response.status}`);
-  }
-
-  return response.json();
-}
-
 export async function interpolateVideoWithBackend({
   file,
   demoVideo,
   fpsMultiplier,
-  batchSize,
-  tileSize,
   refinerScale,
   skipRefiner,
   ffmpegPreset,
@@ -84,8 +52,6 @@ export async function interpolateVideoWithBackend({
   if (file) formData.append("file", file);
   if (demoVideo) formData.append("demo_video", demoVideo);
   formData.append("fps_multiplier", String(fpsMultiplier));
-  formData.append("batch_size", String(batchSize));
-  if (tileSize !== "auto") formData.append("tile_size", String(tileSize));
   formData.append("refiner_scale", String(refinerScale));
   formData.append("skip_refiner", String(skipRefiner));
   formData.append("ffmpeg_preset", ffmpegPreset);
@@ -107,8 +73,6 @@ export async function startVideoJob({
   file,
   demoVideo,
   fpsMultiplier,
-  batchSize,
-  tileSize,
   refinerScale,
   skipRefiner,
   ffmpegPreset,
@@ -118,8 +82,6 @@ export async function startVideoJob({
   if (file) formData.append("file", file);
   if (demoVideo) formData.append("demo_video", demoVideo);
   formData.append("fps_multiplier", String(fpsMultiplier));
-  formData.append("batch_size", String(batchSize));
-  if (tileSize !== "auto") formData.append("tile_size", String(tileSize));
   formData.append("refiner_scale", String(refinerScale));
   formData.append("skip_refiner", String(skipRefiner));
   formData.append("ffmpeg_preset", ffmpegPreset);

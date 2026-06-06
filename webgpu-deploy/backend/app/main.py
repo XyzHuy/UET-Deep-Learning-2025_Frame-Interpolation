@@ -1,9 +1,7 @@
 import gc
-import json
 import os
 import shutil
 import sys
-import subprocess
 import tempfile
 import threading
 import time
@@ -29,7 +27,7 @@ DEVICE = os.getenv("DEVICE", "auto")
 ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
 DEMO_DIR = ROOT / "video_demo"
 INTERPOLATOR_LOCK = threading.Lock()
-KEEP_MODEL_WARM = os.getenv("KEEP_MODEL_WARM", "0").strip().lower()
+KEEP_MODEL_WARM = os.getenv("KEEP_MODEL_WARM", "0").strip().lower() in {"1", "true", "yes", "on"}
 _INTERPOLATOR = None
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -174,8 +172,6 @@ async def interpolate_video(
     file: UploadFile | None = File(None),
     demo_video: str | None = Form(None),
     fps_multiplier: int = Form(2),
-    batch_size: int = Form(1),
-    tile_size: int | None = Form(None),
     refiner_scale: float = Form(0.5),
     skip_refiner: bool = Form(False),
     crf: int = Form(18),
@@ -183,8 +179,6 @@ async def interpolate_video(
 ):
     if fps_multiplier not in {2, 4, 8, 16, 32}:
         raise HTTPException(status_code=400, detail="fps_multiplier must be one of 2, 4, 8, 16, 32")
-    if batch_size < 1:
-        raise HTTPException(status_code=400, detail="batch_size must be >= 1")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="vfi-video-"))
     input_path = temp_dir / "input.mp4"
@@ -203,7 +197,6 @@ async def interpolate_video(
             try:
                 interpolator = get_interpolator()
                 interpolator.configure_runtime(
-                    tile_size=normalize_tile_size(tile_size),
                     refiner_scale=refiner_scale,
                     skip_refiner=skip_refiner,
                 )
@@ -211,7 +204,6 @@ async def interpolate_video(
                     input_path=str(input_path),
                     output_path=str(output_path),
                     fps_multiplier=fps_multiplier,
-                    batch_size=batch_size,
                     use_ffmpeg=True,
                     crf=crf,
                     ffmpeg_preset=normalize_ffmpeg_preset(ffmpeg_preset),
@@ -238,8 +230,6 @@ async def start_interpolate_video(
     file: UploadFile | None = File(None),
     demo_video: str | None = Form(None),
     fps_multiplier: int = Form(2),
-    batch_size: int = Form(1),
-    tile_size: int | None = Form(None),
     refiner_scale: float = Form(0.5),
     skip_refiner: bool = Form(False),
     crf: int = Form(18),
@@ -247,8 +237,6 @@ async def start_interpolate_video(
 ):
     if fps_multiplier not in {2, 4, 8, 16, 32}:
         raise HTTPException(status_code=400, detail="fps_multiplier must be one of 2, 4, 8, 16, 32")
-    if batch_size < 1:
-        raise HTTPException(status_code=400, detail="batch_size must be >= 1")
 
     job_id = uuid.uuid4().hex
     temp_dir = Path(tempfile.mkdtemp(prefix=f"vfi-job-{job_id}-"))
@@ -287,8 +275,6 @@ async def start_interpolate_video(
             str(input_path),
             str(output_path),
             fps_multiplier,
-            batch_size,
-            normalize_tile_size(tile_size),
             refiner_scale,
             skip_refiner,
             crf,
@@ -298,60 +284,6 @@ async def start_interpolate_video(
     )
     thread.start()
     return public_job(job)
-
-
-@app.post("/api/profile/video")
-async def profile_video(
-    file: UploadFile | None = File(None),
-    demo_video: str | None = Form(None),
-    batch_sizes: str = Form("1,2,4,8"),
-    tile_size: int | None = Form(None),
-    refiner_scale: float = Form(0.5),
-    skip_refiner: bool = Form(False),
-):
-    temp_dir = Path(tempfile.mkdtemp(prefix="vfi-profile-"))
-    input_path = temp_dir / "input.mp4"
-
-    try:
-        if demo_video:
-            input_path = resolve_demo_video(demo_video)
-        elif file is not None:
-            input_path = temp_dir / safe_name(file.filename, "input.mp4")
-            await save_upload(file, input_path)
-        else:
-            raise HTTPException(status_code=400, detail="Provide either a video file or demo_video")
-
-        width, height = read_video_size(input_path)
-        parsed_batch_sizes = parse_batch_sizes(batch_sizes)
-        normalized_tile_size = normalize_tile_size(tile_size)
-        if should_profile_in_worker():
-            profile = profile_batch_sizes_in_worker(
-                height,
-                width,
-                parsed_batch_sizes,
-                normalized_tile_size,
-                refiner_scale,
-                skip_refiner,
-            )
-        else:
-            with INTERPOLATOR_LOCK:
-                try:
-                    interpolator = get_interpolator()
-                    interpolator.configure_runtime(
-                        tile_size=normalized_tile_size,
-                        refiner_scale=refiner_scale,
-                        skip_refiner=skip_refiner,
-                    )
-                    profile = interpolator.profile_batch_sizes(height, width, parsed_batch_sizes)
-                finally:
-                    release_interpolator_if_cold()
-        profile.update({
-            "width": width,
-            "height": height,
-        })
-        return profile
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 async def save_upload(upload: UploadFile, path: Path):
@@ -370,36 +302,6 @@ def resolve_demo_video(name):
     if not path.exists() or path.parent != DEMO_DIR or not path.name.endswith("_6fps.mp4"):
         raise HTTPException(status_code=404, detail="Demo video not found")
     return path
-
-
-def read_video_size(path):
-    cap = cv2.VideoCapture(str(path))
-    try:
-        if not cap.isOpened():
-            raise HTTPException(status_code=400, detail="Cannot open video")
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        return width, height
-    finally:
-        cap.release()
-
-
-def parse_batch_sizes(value):
-    try:
-        batch_sizes = [int(part.strip()) for part in value.split(",") if part.strip()]
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail="batch_sizes must be comma-separated integers") from error
-    if not batch_sizes or any(batch_size < 1 for batch_size in batch_sizes):
-        raise HTTPException(status_code=400, detail="batch_sizes must contain values >= 1")
-    return batch_sizes
-
-
-def normalize_tile_size(value):
-    if value in (None, 0):
-        return None
-    if value < 64:
-        raise HTTPException(status_code=400, detail="tile_size must be >= 64 or omitted")
-    return value
 
 
 def normalize_ffmpeg_preset(value):
@@ -465,47 +367,11 @@ def gpu_status_payload(include_memory=None):
     return payload
 
 
-def should_profile_in_worker():
-    if KEEP_MODEL_WARM or DEVICE == "cpu":
-        return False
-    return torch.cuda.is_available()
-
-
-def profile_batch_sizes_in_worker(height, width, batch_sizes, tile_size, refiner_scale, skip_refiner):
-    payload = {
-        "model_path": str(MODEL_PATH),
-        "device": DEVICE,
-        "height": height,
-        "width": width,
-        "batch_sizes": batch_sizes,
-        "tile_size": tile_size,
-        "refiner_scale": refiner_scale,
-        "skip_refiner": skip_refiner,
-    }
-    backend_root = Path(__file__).resolve().parents[1]
-    result = subprocess.run(
-        [sys.executable, "-m", "app.profile_worker", json.dumps(payload)],
-        cwd=str(backend_root),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "Profile worker failed"
-        raise HTTPException(status_code=500, detail=detail)
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise HTTPException(status_code=500, detail=f"Invalid profile worker output: {result.stdout}") from error
-
-
 def run_video_job(
     job_id,
     input_path,
     output_path,
     fps_multiplier,
-    batch_size,
-    tile_size,
     refiner_scale,
     skip_refiner,
     crf,
@@ -528,7 +394,6 @@ def run_video_job(
             try:
                 interpolator = get_interpolator()
                 interpolator.configure_runtime(
-                    tile_size=tile_size,
                     refiner_scale=refiner_scale,
                     skip_refiner=skip_refiner,
                 )
@@ -536,7 +401,6 @@ def run_video_job(
                     input_path=input_path,
                     output_path=output_path,
                     fps_multiplier=fps_multiplier,
-                    batch_size=batch_size,
                     use_ffmpeg=True,
                     crf=crf,
                     ffmpeg_preset=ffmpeg_preset,

@@ -16,7 +16,6 @@ import {
   getVideoJob,
   getVideoJobResult,
   listDemoVideos,
-  profileVideoWithBackend,
   releaseGpuMemory,
   startVideoJob,
 } from "./api";
@@ -39,10 +38,6 @@ function App() {
   const [selectedDemo, setSelectedDemo] = useState("");
   const [targetSize, setTargetSize] = useState({ width: 256, height: 256 });
   const [fpsMultiplier, setFpsMultiplier] = useState(16);
-  const [batchSize, setBatchSize] = useState(1);
-  const [profileCandidates, setProfileCandidates] = useState("1,2,4,8");
-  const [profileRows, setProfileRows] = useState([]);
-  const [tileSize, setTileSize] = useState("auto");
   const [ffmpegPreset, setFfmpegPreset] = useState("veryfast");
   const [jobProgress, setJobProgress] = useState(null);
   const [refinerScale, setRefinerScale] = useState(0.5);
@@ -58,10 +53,6 @@ function App() {
   const selectedDemoInfo = demoVideos.find((video) => video.name === selectedDemo);
   const videoPreview = selectedDemoInfo?.url || uploadedVideoPreview;
   const outputUrl = useObjectUrl(outputBlob);
-  const batchEstimate = useMemo(
-    () => estimateVramForBatch(profileRows, batchSize),
-    [profileRows, batchSize],
-  );
 
   useEffect(() => {
     let cancelled = false;
@@ -147,35 +138,6 @@ function App() {
     }
   }
 
-  async function runVideoProfile() {
-    if (!videoFile && !selectedDemo) {
-      setStatus("Select a video");
-      return;
-    }
-
-    setBusy(true);
-    setProfileRows([]);
-    setStatus("Profiling VRAM");
-    try {
-      const profile = await profileVideoWithBackend({
-        file: selectedDemo ? null : videoFile,
-        demoVideo: selectedDemo,
-        batchSizes: profileCandidates,
-        tileSize,
-        refinerScale,
-        skipRefiner,
-      });
-      setProfileRows(profile.rows || []);
-      const recommended = [...(profile.rows || [])].reverse().find((row) => row.ok && row.vram_used_percent < 85);
-      if (recommended) setBatchSize(recommended.batch_size);
-      setStatus(profile.cuda ? `Profiled ${profile.width}x${profile.height}` : `Profile unavailable on ${profile.device}`);
-    } catch (error) {
-      setStatus(`Profile failed: ${error.message}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function releaseBackendGpu() {
     setBusy(true);
     setStatus("Releasing GPU");
@@ -205,8 +167,6 @@ function App() {
         file: selectedDemo ? null : videoFile,
         demoVideo: selectedDemo,
         fpsMultiplier,
-        batchSize,
-        tileSize,
         refinerScale,
         skipRefiner,
         ffmpegPreset,
@@ -338,28 +298,6 @@ function App() {
                   onChange={(event) => setFpsMultiplier(MULTIPLIERS[Number(event.target.value)])}
                 />
               </Field>
-              <div className="grid-2">
-                <Field label={`Batch ${batchSize}`}>
-                  <input
-                    type="number"
-                    min="1"
-                    max="64"
-                    value={batchSize}
-                    onChange={(event) => setBatchSize(Math.max(1, Number(event.target.value)))}
-                  />
-                </Field>
-                <Field label="Candidates">
-                  <input value={profileCandidates} onChange={(event) => setProfileCandidates(event.target.value)} />
-                </Field>
-              </div>
-              <Field label="Tile">
-                <select value={tileSize} onChange={(event) => setTileSize(event.target.value)}>
-                  <option value="auto">auto</option>
-                  <option value="384">384</option>
-                  <option value="512">512</option>
-                  <option value="640">640</option>
-                </select>
-              </Field>
               <Field label="Encoder">
                 <select value={ffmpegPreset} onChange={(event) => setFfmpegPreset(event.target.value)}>
                   <option value="ultrafast">ultrafast</option>
@@ -370,13 +308,6 @@ function App() {
                   <option value="medium">medium</option>
                 </select>
               </Field>
-              {batchEstimate && (
-                <div className="estimate-line">
-                  <span>Batch {batchSize}</span>
-                  <strong>{Math.round(batchEstimate.devicePeakMb)} MB</strong>
-                  <span>{batchEstimate.percent.toFixed(1)}%</span>
-                </div>
-              )}
               <Field label="Refiner">
                 <select value={refinerScale} onChange={(event) => setRefinerScale(Number(event.target.value))}>
                   <option value={1}>full</option>
@@ -400,13 +331,9 @@ function App() {
                 <Cpu size={16} />
                 Release GPU
               </button>
-              <button className="primary" onClick={runVideoProfile} disabled={busy}>
-                <Cpu size={16} />
-                Profile VRAM
-              </button>
               <button className="primary dark" onClick={runVideoBackend} disabled={busy}>
                 <Play size={16} />
-                Run video x{fpsMultiplier} b{batchSize}
+                Run video x{fpsMultiplier}
               </button>
               {jobProgress && (
                 <div className="progress-box">
@@ -420,27 +347,6 @@ function App() {
                   <div className="progress-count">
                     {jobProgress.completed || 0}/{jobProgress.total || 1}
                   </div>
-                </div>
-              )}
-              {profileRows.length > 0 && (
-                <div className="metric-table">
-                  <div className="metric-head">
-                    <span>Batch</span>
-                    <span>Peak est.</span>
-                    <span>VRAM</span>
-                  </div>
-                  {profileRows.map((row) => (
-                    <button
-                      key={row.batch_size}
-                      className={row.ok ? "metric-row" : "metric-row bad"}
-                      onClick={() => row.ok && setBatchSize(row.batch_size)}
-                      disabled={!row.ok}
-                    >
-                      <span>{row.batch_size}</span>
-                      <span>{row.ok ? `${Math.round(displayPeakMb(row))} MB` : "OOM"}</span>
-                      <span>{row.ok ? `${row.vram_used_percent.toFixed(1)}%` : "-"}</span>
-                    </button>
-                  ))}
                 </div>
               )}
               <div className="hint">
@@ -531,51 +437,6 @@ function useObjectUrl(value) {
   }, [value]);
 
   return url;
-}
-
-function estimateVramForBatch(rows, batchSize) {
-  const measured = rows
-    .filter((row) => row.ok && Number.isFinite(displayPeakMb(row)) && Number.isFinite(row.total_vram_mb))
-    .sort((a, b) => a.batch_size - b.batch_size);
-
-  if (measured.length === 0) return null;
-
-  const exact = measured.find((row) => row.batch_size === batchSize);
-  if (exact) {
-    return {
-      devicePeakMb: displayPeakMb(exact),
-      percent: displayPeakMb(exact) / exact.total_vram_mb * 100,
-    };
-  }
-
-  const totalVramMb = measured[0].total_vram_mb;
-  if (measured.length === 1) {
-    return {
-      devicePeakMb: displayPeakMb(measured[0]),
-      percent: displayPeakMb(measured[0]) / totalVramMb * 100,
-    };
-  }
-
-  const lower = [...measured].reverse().find((row) => row.batch_size < batchSize);
-  const upper = measured.find((row) => row.batch_size > batchSize);
-  const left = lower || measured[0];
-  const right = upper || measured[measured.length - 1];
-  const slope = right.batch_size === left.batch_size
-    ? 0
-    : (displayPeakMb(right) - displayPeakMb(left)) / (right.batch_size - left.batch_size);
-  const devicePeakMb = Math.max(
-    0,
-    displayPeakMb(left) + slope * (batchSize - left.batch_size),
-  );
-
-  return {
-    devicePeakMb,
-    percent: devicePeakMb / totalVramMb * 100,
-  };
-}
-
-function displayPeakMb(row) {
-  return row.conservative_peak_used_mb ?? row.device_peak_used_mb;
 }
 
 function formatGpuState(info, fallback) {

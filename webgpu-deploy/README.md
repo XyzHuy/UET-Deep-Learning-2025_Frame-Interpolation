@@ -91,6 +91,7 @@ MODEL_PATH=/app/checkpoint/model.pth
 DEVICE=auto
 ALLOWED_ORIGINS=*
 KEEP_MODEL_WARM=0
+USE_CUDA_APPLY_SHIFT=1
 ```
 
 GPU management endpoints:
@@ -99,5 +100,4 @@ GPU management endpoints:
 GET  /api/gpu/status
 POST /api/gpu/release
 ```
-
 

@@ -55,7 +55,8 @@ Use `--no_ffmpeg` to fall back to OpenCV `VideoWriter`.
 
 ## Runtime Benchmark
 
-Measure model-only inference runtime on CUDA:
+Measure model-only inference runtime on CUDA. The benchmark reports both the original
+PyTorch `apply_shift` path and the fused CUDA `apply_shift` path when CUDA is available:
 
 ```bash
 python benchmark_runtime.py \
@@ -65,6 +66,9 @@ python benchmark_runtime.py \
   --width 256 \
   --iters 100
 ```
+
+Use `--batch 1` for the default video-inference configuration. Use
+`--no_cuda_apply_shift` to measure only the original PyTorch path.
 
 Video Demo (Comparison)
 

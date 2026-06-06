@@ -9,6 +9,7 @@ import subprocess
 import math
 import gc
 from Model import MainModel
+from cuda_apply_shift import cuda_apply_shift_enabled_by_default, patch_model_apply_shift
 
             
 class VideoInterpolator:
@@ -16,13 +17,12 @@ class VideoInterpolator:
         self,
         model_path,
         device='auto',
-        tile_size=None,
-        tile_overlap=32,
         use_fp16=True,
         use_cpu_bf16=False,
         channels_last=True,
         refiner_scale=1.0,
-        skip_refiner=False
+        skip_refiner=False,
+        use_cuda_apply_shift=None
     ):
         self.device = self.resolve_device(device)
         self.use_fp16 = use_fp16 and self.device.type == 'cuda'
@@ -49,9 +49,18 @@ class VideoInterpolator:
 
         if self.channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)
+
+        self.use_cuda_apply_shift = False
+        if use_cuda_apply_shift is None:
+            use_cuda_apply_shift = cuda_apply_shift_enabled_by_default()
+        if self.device.type == 'cuda' and use_cuda_apply_shift:
+            try:
+                self.use_cuda_apply_shift = patch_model_apply_shift(self.model)
+            except Exception as error:
+                print(f"CUDA apply_shift unavailable, falling back to PyTorch apply_shift: {error}")
         
-        self.tile_size = tile_size
-        self.tile_overlap = tile_overlap
+        self.tile_size = None
+        self.tile_overlap = 32
         self.refiner_scale = refiner_scale
         self.skip_refiner = skip_refiner
         
@@ -59,25 +68,21 @@ class VideoInterpolator:
         print(f"FP16: {'Enabled' if self.use_fp16 else 'Disabled'}")
         print(f"CPU BF16: {'Enabled' if self.use_cpu_bf16 else 'Disabled'}")
         print(f"Channels last: {'Enabled' if self.channels_last else 'Disabled'}")
+        print(f"CUDA apply_shift: {'Enabled' if self.use_cuda_apply_shift else 'Disabled'}")
         print(f"Refiner: {'Skipped' if self.skip_refiner else f'scale x{self.refiner_scale:g}'}")
-        print(f"Tile processing: {'Auto' if tile_size is None else f'{tile_size}x{tile_size}'}")
+        print("Tile processing: Auto")
 
     def configure_runtime(
         self,
-        tile_size=None,
         refiner_scale=None,
         skip_refiner=None,
-        tile_overlap=None,
     ):
-        self.tile_size = tile_size
         if refiner_scale is not None:
             if refiner_scale not in (1.0, 0.5, 0.25):
                 raise ValueError("refiner_scale must be one of 1.0, 0.5, 0.25")
             self.refiner_scale = refiner_scale
         if skip_refiner is not None:
             self.skip_refiner = skip_refiner
-        if tile_overlap is not None:
-            self.tile_overlap = tile_overlap
 
     def clear_memory_cache(self):
         gc.collect()
@@ -173,59 +178,6 @@ class VideoInterpolator:
             
             return pred_np
 
-    def interpolate_frame_batch(self, frame_pairs):
-        if not frame_pairs:
-            return []
-
-        first_shape = frame_pairs[0][0].shape
-        if any(frame0.shape != first_shape or frame1.shape != first_shape for frame0, frame1 in frame_pairs):
-            return [self.interpolate_frame(frame0, frame1) for frame0, frame1 in frame_pairs]
-
-        with torch.inference_mode():
-            frames0 = np.stack([pair[0] for pair in frame_pairs], axis=0)
-            frames1 = np.stack([pair[1] for pair in frame_pairs], axis=0)
-            img0 = torch.from_numpy(frames0).permute(0, 3, 1, 2).float() / 255.0
-            img1 = torch.from_numpy(frames1).permute(0, 3, 1, 2).float() / 255.0
-
-            img0 = img0.to(self.device, non_blocking=self.device.type == 'cuda')
-            img1 = img1.to(self.device, non_blocking=self.device.type == 'cuda')
-
-            if self.use_fp16:
-                img0 = img0.half()
-                img1 = img1.half()
-
-            img0, orig_size = self.pad_to_multiple(img0)
-            img1, _ = self.pad_to_multiple(img1)
-
-            if self.channels_last:
-                img0 = img0.contiguous(memory_format=torch.channels_last)
-                img1 = img1.contiguous(memory_format=torch.channels_last)
-
-            tile_size = self.tile_size
-            if tile_size is None:
-                tile_size = self.auto_tile_size(orig_size[0], orig_size[1])
-
-            autocast_enabled = self.use_fp16 or self.use_cpu_bf16
-            autocast_dtype = torch.float16 if self.device.type == 'cuda' else torch.bfloat16
-            with torch.autocast(device_type=self.device.type, dtype=autocast_dtype, enabled=autocast_enabled):
-                if tile_size and (img0.shape[2] > tile_size or img0.shape[3] > tile_size):
-                    pred = self.tile_inference(img0, img1, tile_size)
-                else:
-                    pred = self.model(
-                        img0,
-                        img1,
-                        refiner_scale=self.refiner_scale,
-                        skip_refiner=self.skip_refiner
-                    )[0]
-
-            if self.use_fp16 or self.use_cpu_bf16:
-                pred = pred.float()
-
-            pred = pred[:, :, :orig_size[0], :orig_size[1]]
-            pred_np = pred.permute(0, 2, 3, 1).cpu().numpy()
-            pred_np = (pred_np * 255).clip(0, 255).astype(np.uint8)
-            return [pred_np[i] for i in range(pred_np.shape[0])]
-    
     def tile_inference(self, img0, img1, tile_size):
         """
         Tile-based inference with simple overlap blending.
@@ -305,135 +257,12 @@ class VideoInterpolator:
             + self.generate_intermediate_frames(mid_frame, frame1, half)
         )
 
-    def generate_intermediate_frame_groups(self, frame_pairs, fps_multiplier):
-        if not frame_pairs:
-            return []
-        if fps_multiplier == 1:
-            return [[] for _ in frame_pairs]
-
-        mid_frames = self.interpolate_frame_batch(frame_pairs)
-        if fps_multiplier == 2:
-            return [[mid_frame] for mid_frame in mid_frames]
-
-        half = fps_multiplier // 2
-        left_pairs = [
-            (frame0, mid_frame)
-            for (frame0, _), mid_frame in zip(frame_pairs, mid_frames)
-        ]
-        right_pairs = [
-            (mid_frame, frame1)
-            for (_, frame1), mid_frame in zip(frame_pairs, mid_frames)
-        ]
-        left_groups = self.generate_intermediate_frame_groups(left_pairs, half)
-        right_groups = self.generate_intermediate_frame_groups(right_pairs, half)
-
-        return [
-            left + [mid_frame] + right
-            for left, mid_frame, right in zip(left_groups, mid_frames, right_groups)
-        ]
-
-    def profile_batch_sizes(self, height, width, batch_sizes):
-        device = str(self.device)
-        if self.device.type != 'cuda':
-            return {
-                "cuda": False,
-                "device": device,
-                "rows": [
-                    {
-                        "batch_size": batch_size,
-                        "ok": True,
-                        "device_peak_used_mb": None,
-                        "conservative_peak_used_mb": None,
-                        "vram_used_percent": 0.0,
-                        "total_vram_mb": None,
-                    }
-                    for batch_size in batch_sizes
-                ],
-            }
-
-        rows = []
-        padded_h = height + (32 - height % 32) % 32
-        padded_w = width + (32 - width % 32) % 32
-        _, total_memory = torch.cuda.mem_get_info()
-        total_vram_mb = total_memory / (1024 ** 2)
-
-        for batch_size in batch_sizes:
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats(self.device)
-            img0 = None
-            img1 = None
-            pred = None
-            try:
-                img0 = torch.rand(batch_size, 3, padded_h, padded_w, device=self.device)
-                img1 = torch.rand(batch_size, 3, padded_h, padded_w, device=self.device)
-                if self.use_fp16:
-                    img0 = img0.half()
-                    img1 = img1.half()
-                if self.channels_last:
-                    img0 = img0.contiguous(memory_format=torch.channels_last)
-                    img1 = img1.contiguous(memory_format=torch.channels_last)
-
-                autocast_enabled = self.use_fp16 or self.use_cpu_bf16
-                autocast_dtype = torch.float16 if self.device.type == 'cuda' else torch.bfloat16
-                with torch.inference_mode(), torch.autocast(
-                    device_type=self.device.type,
-                    dtype=autocast_dtype,
-                    enabled=autocast_enabled,
-                ):
-                    tile_size = self.tile_size
-                    if tile_size is None:
-                        tile_size = self.auto_tile_size(height, width)
-
-                    if tile_size and (padded_h > tile_size or padded_w > tile_size):
-                        pred = self.tile_inference(img0, img1, tile_size)
-                    else:
-                        pred = self.model(
-                            img0,
-                            img1,
-                            refiner_scale=self.refiner_scale,
-                            skip_refiner=self.skip_refiner,
-                        )[0]
-                    torch.cuda.synchronize()
-
-                peak_mb = torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)
-                rows.append({
-                    "batch_size": batch_size,
-                    "ok": True,
-                    "device_peak_used_mb": peak_mb,
-                    "conservative_peak_used_mb": peak_mb,
-                    "vram_used_percent": peak_mb / total_vram_mb * 100,
-                    "total_vram_mb": total_vram_mb,
-                })
-            except RuntimeError as error:
-                if "out of memory" not in str(error).lower():
-                    raise
-                torch.cuda.empty_cache()
-                rows.append({
-                    "batch_size": batch_size,
-                    "ok": False,
-                    "device_peak_used_mb": None,
-                    "conservative_peak_used_mb": None,
-                    "vram_used_percent": 100.0,
-                    "total_vram_mb": total_vram_mb,
-                })
-            finally:
-                del img0, img1, pred
-                gc.collect()
-                torch.cuda.empty_cache()
-
-        return {
-            "cuda": True,
-            "device": device,
-            "rows": rows,
-        }
-    
     def interpolate_video(
         self,
         input_path,
         output_path,
         fps_multiplier=2,
         output_fps=None,
-        batch_size=1,
         use_ffmpeg=True,
         crf=18,
         ffmpeg_preset='medium',
@@ -447,14 +276,11 @@ class VideoInterpolator:
             output_path: Path to output video
             fps_multiplier: 2 for x2 FPS, 4 for x4 FPS
             output_fps: Custom output FPS (if None, auto calculate)
-            batch_size: Number of adjacent frame pairs processed together.
             use_ffmpeg: Use ffmpeg for encoding (faster & smaller file)
             crf: FFmpeg CRF value (18=high quality, 23=default, 28=lower quality)
         """
         if fps_multiplier not in {2, 4, 8, 16, 32}:
             raise ValueError("fps_multiplier must be one of 2, 4, 8, 16, 32")
-        if batch_size < 1:
-            raise ValueError("batch_size must be >= 1")
 
         cap = cv2.VideoCapture(input_path)
         
@@ -481,7 +307,7 @@ class VideoInterpolator:
         print(f" Processing mode: {tile_info}")
         intervals = max(total_frames - 1, 0)
         estimated_frames = intervals * fps_multiplier + (1 if total_frames else 0)
-        print(f" Batch size: {batch_size}")
+        print(" Batch size: 1")
         print(f" Estimated output frames: {estimated_frames}")
         
         if use_ffmpeg:
@@ -514,19 +340,6 @@ class VideoInterpolator:
             def write_rgb(frame_rgb):
                 process.stdin.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR).tobytes())
 
-            def write_pair_chunk(pair_chunk, completed):
-                frame_groups = self.generate_intermediate_frame_groups(pair_chunk, fps_multiplier)
-                for (frame0, _), intermediate_frames in zip(pair_chunk, frame_groups):
-                    write_rgb(frame0)
-                    for inter_frame in intermediate_frames:
-                        write_rgb(inter_frame)
-
-                completed += len(pair_chunk)
-                pbar.update(len(pair_chunk))
-                if progress_callback is not None:
-                    progress_callback(completed, intervals)
-                return completed
-
             pbar = None
             try:
                 ret, prev_frame = cap.read()
@@ -538,24 +351,24 @@ class VideoInterpolator:
                 
                 pbar = tqdm(total=intervals, desc="Processing", unit="pair", ncols=100)
                 completed = 0
-                pair_chunk = []
                 
                 while True:
                     ret, curr_frame = cap.read()
                     
                     if not ret:
-                        if pair_chunk:
-                            completed = write_pair_chunk(pair_chunk, completed)
                         write_rgb(prev_frame)
                         break
                     
                     curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2RGB)
-                    pair_chunk.append((prev_frame, curr_frame))
+                    write_rgb(prev_frame)
+                    for inter_frame in self.generate_intermediate_frames(prev_frame, curr_frame, fps_multiplier):
+                        write_rgb(inter_frame)
                     
                     prev_frame = curr_frame
-                    if len(pair_chunk) >= batch_size:
-                        completed = write_pair_chunk(pair_chunk, completed)
-                        pair_chunk = []
+                    completed += 1
+                    pbar.update(1)
+                    if progress_callback is not None:
+                        progress_callback(completed, intervals)
 
                 process.stdin.close()
                 stderr = process.stderr.read().decode('utf-8', errors='replace')
@@ -585,37 +398,24 @@ class VideoInterpolator:
             
             pbar = tqdm(total=intervals, desc="Processing", unit="pair", ncols=100)
             completed = 0
-            pair_chunk = []
-
-            def write_pair_chunk_cv2(pair_chunk, completed):
-                frame_groups = self.generate_intermediate_frame_groups(pair_chunk, fps_multiplier)
-                for (frame0, _), intermediate_frames in zip(pair_chunk, frame_groups):
-                    out.write(cv2.cvtColor(frame0, cv2.COLOR_RGB2BGR))
-                    for inter_frame in intermediate_frames:
-                        out.write(cv2.cvtColor(inter_frame, cv2.COLOR_RGB2BGR))
-
-                completed += len(pair_chunk)
-                pbar.update(len(pair_chunk))
-                if progress_callback is not None:
-                    progress_callback(completed, intervals)
-                return completed
             
             while True:
                 ret, curr_frame = cap.read()
                 
                 if not ret:
-                    if pair_chunk:
-                        completed = write_pair_chunk_cv2(pair_chunk, completed)
                     out.write(cv2.cvtColor(prev_frame, cv2.COLOR_RGB2BGR))
                     break
                 
                 curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2RGB)
-                pair_chunk.append((prev_frame, curr_frame))
+                out.write(cv2.cvtColor(prev_frame, cv2.COLOR_RGB2BGR))
+                for inter_frame in self.generate_intermediate_frames(prev_frame, curr_frame, fps_multiplier):
+                    out.write(cv2.cvtColor(inter_frame, cv2.COLOR_RGB2BGR))
                 
                 prev_frame = curr_frame
-                if len(pair_chunk) >= batch_size:
-                    completed = write_pair_chunk_cv2(pair_chunk, completed)
-                    pair_chunk = []
+                completed += 1
+                pbar.update(1)
+                if progress_callback is not None:
+                    progress_callback(completed, intervals)
             
             pbar.close()
             out.release()
@@ -640,10 +440,6 @@ def main():
                         help='FPS multiplier')
     parser.add_argument('--output_fps', type=float, default=None,
                         help='Custom output FPS (overrides multiplier)')
-    parser.add_argument('--tile_size', type=int, default=None,
-                        help='Manual tile size (None=auto detect)') 
-    parser.add_argument('--tile_overlap', type=int, default=32,
-                        help='Tile overlap size')
     parser.add_argument('--device', type=str, default='cuda', choices=['auto', 'cuda', 'cpu'],
                         help='Device mode: auto, cuda, or cpu')
     parser.add_argument('--cpu', action='store_true',
@@ -662,6 +458,8 @@ def main():
                         help='Skip residual U-Net refiner and output the coarse merged frame')
     parser.add_argument('--no_fp16', action='store_true',
                         help='Disable FP16 (use FP32)')
+    parser.add_argument('--no_cuda_apply_shift', action='store_true',
+                        help='Disable the experimental fused CUDA apply_shift kernel')
     parser.add_argument('--no_ffmpeg', action='store_true',
                         help='Disable ffmpeg encoding (use cv2 instead)')
     parser.add_argument('--crf', type=int, default=18,
@@ -685,13 +483,12 @@ def main():
     interpolator = VideoInterpolator(
         model_path=args.model,
         device=args.device,
-        tile_size=args.tile_size,
-        tile_overlap=args.tile_overlap,
         use_fp16=not args.no_fp16,
         use_cpu_bf16=args.cpu_bf16,
         channels_last=not args.no_channels_last,
         refiner_scale=args.refiner_scale,
-        skip_refiner=args.skip_refiner
+        skip_refiner=args.skip_refiner,
+        use_cuda_apply_shift=not args.no_cuda_apply_shift
     )
     
     # Process video

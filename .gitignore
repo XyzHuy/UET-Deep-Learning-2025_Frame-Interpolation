@@ -1,0 +1,5 @@
+/.venv
+/__pycache__
+/webgpu-deploy/backend/__pycache__
+/webgpu-deploy/frontend/node_modules
+/webgpu-deploy/frontend/dist

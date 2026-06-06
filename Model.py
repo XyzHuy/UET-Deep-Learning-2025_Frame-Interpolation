@@ -26,21 +26,16 @@ def safe_shift(x, dy, dx):
         return x
 
     _, _, h, w = x.shape
-    shifted_x = x.new_zeros(x.shape)
+    pad_top = max(dy, 0)
+    pad_bottom = max(-dy, 0)
+    pad_left = max(dx, 0)
+    pad_right = max(-dx, 0)
+    crop_y = max(-dy, 0)
+    crop_x = max(-dx, 0)
 
-    dst_y0 = max(dy, 0)
-    dst_y1 = h + min(dy, 0)
-    src_y0 = max(-dy, 0)
-    src_y1 = h - max(dy, 0)
+    padded = F.pad(x, (pad_left, pad_right, pad_top, pad_bottom), mode="constant", value=0)
+    return padded[:, :, crop_y:crop_y + h, crop_x:crop_x + w]
 
-    dst_x0 = max(dx, 0)
-    dst_x1 = w + min(dx, 0)
-    src_x0 = max(-dx, 0)
-    src_x1 = w - max(dx, 0)
-
-    if dst_y0 < dst_y1 and dst_x0 < dst_x1:
-        shifted_x[:, :, dst_y0:dst_y1, dst_x0:dst_x1] = x[:, :, src_y0:src_y1, src_x0:src_x1]
-    return shifted_x
 
 def get_directions(D):
 
@@ -322,26 +317,23 @@ class MainModel(nn.Module):
                 visibility
             ], dim=1)
 
-        low_size = (
-            max(1, int(round(merged.shape[2] * refiner_scale))),
-            max(1, int(round(merged.shape[3] * refiner_scale)))
-        )
+        
 
         appearance_low = F.interpolate(
             torch.cat(base_inputs, dim=1),
-            size=low_size,
+            scale_factor=refiner_scale,
             mode='bilinear',
             align_corners=False
         )
         weights_fwd_low = F.interpolate(
             weights_fwd_full,
-            size=low_size,
+            scale_factor=refiner_scale,
             mode='bilinear',
             align_corners=False
         )
         weights_bwd_low = F.interpolate(
             weights_bwd_full,
-            size=low_size,
+            scale_factor=refiner_scale,
             mode='bilinear',
             align_corners=False
         )
@@ -419,7 +411,7 @@ class MainModel(nn.Module):
         if not skip_refiner and refiner_scale != 1.0:
             residual = F.interpolate(
                 residual,
-                size=merged_student.shape[2:],
+                scale_factor=1.0 / refiner_scale,
                 mode='bilinear',
                 align_corners=False
             )

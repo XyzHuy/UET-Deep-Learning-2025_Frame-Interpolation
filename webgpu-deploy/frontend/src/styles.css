@@ -1,0 +1,432 @@
+:root {
+  color: #1d2520;
+  background: #f7f7f3;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  letter-spacing: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 22px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  max-width: 1180px;
+  margin: 0 auto 18px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: clamp(1.45rem, 2vw, 2rem);
+  line-height: 1.1;
+}
+
+.topbar p {
+  margin: 6px 0 0;
+  color: #617069;
+  font-size: 0.95rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  max-width: 460px;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #d7ddd7;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #3b4741;
+  font-size: 0.9rem;
+}
+
+.status-pill span {
+  overflow-wrap: anywhere;
+}
+
+.status-pill.good {
+  border-color: #b9d8c2;
+  color: #176132;
+}
+
+.status-pill.bad {
+  border-color: #e3b8af;
+  color: #8a2d1e;
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 18px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.sidebar,
+.stage {
+  border: 1px solid #d9ded8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+
+.stage {
+  min-height: 560px;
+  padding: 14px;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #d7ddd7;
+  border-radius: 8px;
+  background: #f2f4f0;
+}
+
+.segmented button,
+.primary,
+.download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.segmented button {
+  background: transparent;
+  color: #59665f;
+}
+
+.segmented button.active {
+  background: #ffffff;
+  color: #1d2520;
+  border-color: #d7ddd7;
+}
+
+.primary {
+  width: 100%;
+  background: #e8eee8;
+  border-color: #cdd8cf;
+  color: #1f3b2a;
+}
+
+.primary.dark {
+  background: #1f3b2a;
+  border-color: #1f3b2a;
+  color: #ffffff;
+}
+
+.primary:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.primary:not(:disabled):hover,
+.download:hover {
+  transform: translateY(-1px);
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+}
+
+.field span,
+.preview-title {
+  color: #526159;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #cfd7d0;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2520;
+  padding: 8px 10px;
+}
+
+.field input[type="range"] {
+  padding: 0;
+  accent-color: #2f7f49;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.file-drop {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  border: 1px dashed #b8c4bb;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: #3d4c44;
+  cursor: pointer;
+}
+
+.file-drop input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.checkline,
+.hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #3d4c44;
+  font-size: 0.92rem;
+}
+
+.checkline input {
+  width: 16px;
+  height: 16px;
+  accent-color: #2f7f49;
+}
+
+.hint {
+  color: #68766e;
+}
+
+.metric-table {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid #d7ddd7;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.metric-head,
+.metric-row {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr 0.9fr;
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  color: #526159;
+  font-size: 0.78rem;
+}
+
+.metric-head {
+  font-weight: 700;
+}
+
+.metric-row {
+  width: 100%;
+  border: 1px solid #dfe5df;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #20362a;
+  cursor: pointer;
+}
+
+.metric-row:hover:not(:disabled) {
+  border-color: #9dc9ab;
+}
+
+.metric-row.bad {
+  color: #8a2d1e;
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+.estimate-line {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #bdd6c4;
+  border-radius: 8px;
+  background: #f2f8f3;
+  color: #24452f;
+  font-size: 0.86rem;
+}
+
+.estimate-line strong {
+  font-weight: 750;
+}
+
+.progress-box {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid #d7ddd7;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.progress-meta,
+.progress-count {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #526159;
+  font-size: 0.82rem;
+}
+
+.progress-meta strong {
+  color: #1f3b2a;
+}
+
+.progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5eae5;
+}
+
+.progress-track div {
+  height: 100%;
+  border-radius: inherit;
+  background: #2f7f49;
+  transition: width 160ms ease;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  height: 100%;
+}
+
+.video-stage {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.preview {
+  display: grid;
+  grid-template-rows: auto minmax(240px, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.preview img,
+.preview video,
+.preview canvas,
+.empty {
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+  max-height: 620px;
+  object-fit: contain;
+  border: 1px solid #d9ded8;
+  border-radius: 8px;
+  background: #f4f5f1;
+}
+
+.preview canvas {
+  display: block;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  color: #879188;
+}
+
+.download {
+  width: fit-content;
+  margin-top: 14px;
+  padding: 0 14px;
+  background: #ffffff;
+  border-color: #cdd8cf;
+  color: #1f3b2a;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    padding: 14px;
+  }
+
+  .topbar,
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .status-pill {
+    width: 100%;
+    max-width: none;
+  }
+
+  .preview-grid,
+  .video-stage {
+    grid-template-columns: 1fr;
+  }
+
+  .stage {
+    min-height: 0;
+  }
+}

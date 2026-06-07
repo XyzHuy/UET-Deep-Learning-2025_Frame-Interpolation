@@ -31,13 +31,13 @@ class InterpolationExportWrapper(torch.nn.Module):
 def parse_args():
     parser = argparse.ArgumentParser(description="Export the frame interpolation model to ONNX.")
     parser.add_argument("--checkpoint", default=str(ROOT / "checkpoint" / "model.pth"))
-    parser.add_argument("--output", default=str(ROOT / "webgpu-deploy" / "frontend" / "public" / "models" / "model.onnx"))
+    parser.add_argument("--output", default=str(ROOT / "onnx_model" / "model.onnx"))
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--width", type=int, default=256)
     parser.add_argument("--opset", type=int, default=17)
     parser.add_argument("--refiner_scale", type=float, default=0.5, choices=[1.0, 0.5, 0.25])
     parser.add_argument("--skip_refiner", action="store_true")
-    parser.add_argument("--dynamic", action="store_true", help="Try dynamic height/width axes. Fixed shapes are safer for WebGPU.")
+    parser.add_argument("--dynamic", action="store_true", help="Try dynamic height/width axes.")
     parser.add_argument("--verify", action="store_true", help="Load the exported model with ONNX Runtime CPU once.")
     return parser.parse_args()
 

@@ -12,12 +12,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY webgpu-deploy/backend/requirements.txt /app/requirements.txt
+COPY deploy/backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY Model.py Video_Inference.py /app/
 COPY checkpoint/model.pth /app/checkpoint/model.pth
-COPY webgpu-deploy/backend/app /app/app
+COPY deploy/backend/app /app/app
 
 EXPOSE 8000
 

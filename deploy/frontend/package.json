@@ -1,5 +1,5 @@
 {
-  "name": "vfi-webgpu-frontend",
+  "name": "vfi-deploy-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -14,7 +14,6 @@
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",
     "lucide-react": "^0.468.0",
-    "onnxruntime-web": "^1.23.2",
     "vite": "^6.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

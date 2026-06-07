@@ -24,6 +24,37 @@ This work is submitted as a **final-term assignment** (5-page paper).
 
 ---
 
+## Model Gains
+
+- Replaces dense optical flow with multi-directional discrete shifts, reducing motion-estimation complexity
+- Handles occlusions and asymmetric motion using bidirectional warping with a learned visibility mask
+- Residual U-Net refinement corrects structured artifacts near motion boundaries and improves visual details
+- Achieves competitive PSNR/SSIM with only **~3.1M parameters**
+
+---
+
+## Environment
+
+Core Python environment:
+
+- Python **3.10+**
+- PyTorch **2.3+** and TorchVision **0.18+**
+- OpenCV, NumPy, tqdm, Pillow, Matplotlib
+- FFmpeg for video output through the default raw video pipe
+- CUDA-capable GPU is recommended for inference and benchmark
+- Node.js **18+** for the deployment frontend
+
+Install Python dependencies from the repository root:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+The optional fused CUDA `apply_shift` path requires a CUDA-enabled PyTorch build,
+CUDA Toolkit/NVCC, and a compiler compatible with the installed PyTorch version.
+
+---
+
 ## Video Inference
 
 Run inference on a video with frame rate interpolation:
@@ -69,6 +100,49 @@ python benchmark_runtime.py \
 
 Use `--batch 1` for the default video-inference configuration. Use
 `--no_cuda_apply_shift` to measure only the original PyTorch path.
+
+The custom CUDA kernel fuses the multi-scale, multi-direction `apply_shift`
+operation into a GPU kernel. It addresses the Python-loop runtime bottleneck
+described in the paper and gives about **2x faster apply_shift runtime**, reducing
+that part of inference time by roughly half.
+
+## Deployment
+
+The deploy stack is split into a React frontend and a FastAPI backend:
+
+- Frontend: **Vite + React**, using `VITE_BACKEND_URL` or `http://localhost:8000` by default
+- Backend: **FastAPI + Uvicorn**, reusing the PyTorch `VideoInterpolator` and `deploy/backend/requirements.txt`
+- Backend environment variables: `MODEL_PATH`, `DEVICE`, `ALLOWED_ORIGINS`, `KEEP_MODEL_WARM`, `USE_CUDA_APPLY_SHIFT`
+
+Run backend locally:
+
+```bash
+cd deploy/backend
+python3 -m pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Run frontend locally:
+
+```bash
+cd deploy/frontend
+npm install
+npm run dev
+```
+
+Build frontend:
+
+```bash
+cd deploy/frontend
+npm run build
+```
+
+Backend Docker from the repository root:
+
+```bash
+docker build -f deploy/backend/Dockerfile -t vfi-backend .
+docker run --rm -p 8000:8000 vfi-backend
+```
 
 Video Demo (Comparison)
 

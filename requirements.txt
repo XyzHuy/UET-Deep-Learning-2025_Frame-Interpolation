@@ -1,0 +1,9 @@
+torch>=2.3.0
+torchvision>=0.18.0
+numpy>=1.26.0
+opencv-python>=4.10.0.84
+tqdm>=4.66.0
+Pillow>=10.3.0
+matplotlib>=3.8.0
+ninja>=1.11.1
+onnx>=1.16.0

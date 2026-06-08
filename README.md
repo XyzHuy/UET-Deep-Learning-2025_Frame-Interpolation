@@ -115,6 +115,16 @@ By default, video inference runs the residual U-Net refiner at `--refiner_scale 
 for a faster no-retraining speed/quality tradeoff. Use `--refiner_scale 1.0` for
 the original full-resolution refiner.
 
+Inference mode can be selected explicitly:
+
+```bash
+# Auto mode uses tile inference for high-resolution inputs.
+python Video_Inference.py -i input_path -o output_path -m checkpoint/model.pth --inference_mode auto
+
+# Full-frame mode disables tile inference and runs each frame pair in one pass.
+python Video_Inference.py -i input_path -o output_path -m checkpoint/model.pth --inference_mode full_frame
+```
+
 Fast approximate refiner modes can be tested without retraining:
 
 ```bash

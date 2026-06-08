@@ -54,6 +54,15 @@ KEEP_MODEL_WARM=0
 USE_CUDA_APPLY_SHIFT=1
 ```
 
+The frontend exposes an `Inference` selector:
+
+- `auto tile`: use automatic tile inference for high-resolution inputs.
+- `full frame`: disable tile inference and run each frame pair in one pass.
+
+The backend accepts the same option as form field `inference_mode` with values
+`auto` or `full_frame` on `/api/interpolate/video` and
+`/api/interpolate/video/start`.
+
 GPU management endpoints:
 
 ```text

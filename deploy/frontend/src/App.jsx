@@ -23,6 +23,7 @@ function App() {
   const [jobProgress, setJobProgress] = useState(null);
   const [refinerScale, setRefinerScale] = useState(0.5);
   const [skipRefiner, setSkipRefiner] = useState(false);
+  const [inferenceMode, setInferenceMode] = useState("auto");
   const [status, setStatus] = useState("Ready");
   const [busy, setBusy] = useState(false);
   const [outputBlob, setOutputBlob] = useState(null);
@@ -97,6 +98,7 @@ function App() {
         fpsMultiplier,
         refinerScale,
         skipRefiner,
+        inferenceMode,
         ffmpegPreset,
       });
       let current = job;
@@ -197,6 +199,12 @@ function App() {
               <option value={1}>full</option>
               <option value={0.5}>half</option>
               <option value={0.25}>quarter</option>
+            </select>
+          </Field>
+          <Field label="Inference">
+            <select value={inferenceMode} onChange={(event) => setInferenceMode(event.target.value)}>
+              <option value="auto">auto tile</option>
+              <option value="full_frame">full frame</option>
             </select>
           </Field>
           <label className="checkline">

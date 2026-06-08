@@ -61,6 +61,7 @@ class VideoInterpolator:
         
         self.tile_size = None
         self.tile_overlap = 32
+        self.inference_mode = 'auto'
         self.refiner_scale = refiner_scale
         self.skip_refiner = skip_refiner
         
@@ -70,12 +71,13 @@ class VideoInterpolator:
         print(f"Channels last: {'Enabled' if self.channels_last else 'Disabled'}")
         print(f"CUDA apply_shift: {'Enabled' if self.use_cuda_apply_shift else 'Disabled'}")
         print(f"Refiner: {'Skipped' if self.skip_refiner else f'scale x{self.refiner_scale:g}'}")
-        print("Tile processing: Auto")
+        print("Inference mode: auto")
 
     def configure_runtime(
         self,
         refiner_scale=None,
         skip_refiner=None,
+        inference_mode=None,
     ):
         if refiner_scale is not None:
             if refiner_scale not in (1.0, 0.5, 0.25):
@@ -83,6 +85,21 @@ class VideoInterpolator:
             self.refiner_scale = refiner_scale
         if skip_refiner is not None:
             self.skip_refiner = skip_refiner
+        if inference_mode is not None:
+            self.set_inference_mode(inference_mode)
+
+    def set_inference_mode(self, inference_mode):
+        inference_mode = (inference_mode or 'auto').strip().lower()
+        if inference_mode not in {'auto', 'full_frame'}:
+            raise ValueError("inference_mode must be one of auto, full_frame")
+        self.inference_mode = inference_mode
+
+    def active_tile_size(self, height, width):
+        if self.inference_mode == 'full_frame':
+            return None
+        if self.tile_size is None:
+            return self.auto_tile_size(height, width)
+        return self.tile_size
 
     def clear_memory_cache(self):
         gc.collect()
@@ -123,22 +140,28 @@ class VideoInterpolator:
             img = F.pad(img, (0, pad_w, 0, pad_h), mode='reflect')
         
         return img, (h, w)
+
+    def frame_to_tensor(self, frame):
+        img = torch.from_numpy(frame).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+        img = img.to(self.device, non_blocking=self.device.type == 'cuda')
+        if self.use_fp16:
+            img = img.half()
+        if self.channels_last:
+            img = img.contiguous(memory_format=torch.channels_last)
+        return img
+
+    def tensor_to_frame(self, img):
+        img_np = img.squeeze(0).permute(1, 2, 0).float().cpu().numpy()
+        return (img_np * 255).clip(0, 255).astype(np.uint8)
     
     def interpolate_frame(self, frame0, frame1):
-        with torch.inference_mode():
-            # Convert to tensor
-            img0 = torch.from_numpy(frame0).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-            img1 = torch.from_numpy(frame1).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-            
-            img0 = img0.to(self.device, non_blocking=self.device.type == 'cuda')
-            img1 = img1.to(self.device, non_blocking=self.device.type == 'cuda')
-            
-            # Convert to FP16 if enabled
-            if self.use_fp16:
-                img0 = img0.half()
-                img1 = img1.half()
+        img0 = self.frame_to_tensor(frame0)
+        img1 = self.frame_to_tensor(frame1)
+        return self.tensor_to_frame(self.interpolate_tensor(img0, img1))
 
-            # Pad to multiple of 32
+    def interpolate_tensor(self, img0, img1):
+        with torch.inference_mode():
+            output_dtype = img0.dtype
             img0, orig_size = self.pad_to_multiple(img0)
             img1, _ = self.pad_to_multiple(img1)
 
@@ -146,10 +169,7 @@ class VideoInterpolator:
                 img0 = img0.contiguous(memory_format=torch.channels_last)
                 img1 = img1.contiguous(memory_format=torch.channels_last)
             
-            # Auto-detect tile size 
-            tile_size = self.tile_size
-            if tile_size is None:
-                tile_size = self.auto_tile_size(orig_size[0], orig_size[1])
+            tile_size = self.active_tile_size(orig_size[0], orig_size[1])
             
             # Tile-based processing for high-res
             autocast_enabled = self.use_fp16 or self.use_cpu_bf16
@@ -165,18 +185,11 @@ class VideoInterpolator:
                         skip_refiner=self.skip_refiner
                     )[0]
             
-            # Convert back to FP32
-            if self.use_fp16 or self.use_cpu_bf16:
-                pred = pred.float()
-            
-            # Crop back to original size
             pred = pred[:, :, :orig_size[0], :orig_size[1]]
+            if pred.dtype != output_dtype:
+                pred = pred.to(dtype=output_dtype)
             
-            # Convert back to numpy
-            pred_np = pred.squeeze(0).permute(1, 2, 0).cpu().numpy()
-            pred_np = (pred_np * 255).clip(0, 255).astype(np.uint8)
-            
-            return pred_np
+            return pred
 
     def tile_inference(self, img0, img1, tile_size):
         """
@@ -243,18 +256,18 @@ class VideoInterpolator:
         
         return output[:, :, :orig_h, :orig_w]
 
-    def generate_intermediate_frames(self, frame0, frame1, fps_multiplier):
+    def generate_intermediate_tensors(self, frame0, frame1, fps_multiplier):
         if fps_multiplier == 1:
             return []
         if fps_multiplier == 2:
-            return [self.interpolate_frame(frame0, frame1)]
+            return [self.interpolate_tensor(frame0, frame1)]
 
-        mid_frame = self.interpolate_frame(frame0, frame1)
+        mid_frame = self.interpolate_tensor(frame0, frame1)
         half = fps_multiplier // 2
         return (
-            self.generate_intermediate_frames(frame0, mid_frame, half)
+            self.generate_intermediate_tensors(frame0, mid_frame, half)
             + [mid_frame]
-            + self.generate_intermediate_frames(mid_frame, frame1, half)
+            + self.generate_intermediate_tensors(mid_frame, frame1, half)
         )
 
     def interpolate_video(
@@ -295,15 +308,13 @@ class VideoInterpolator:
         
         new_fps = output_fps if output_fps else orig_fps * fps_multiplier
         
-        # Auto tile size info
-        active_tile = self.tile_size
-        if active_tile is None:
-            active_tile = self.auto_tile_size(height, width)
+        active_tile = self.active_tile_size(height, width)
         tile_info = f"{active_tile}x{active_tile}" if active_tile else "Full Frame"
         
         print(f"\n Input: {width}x{height} @ {orig_fps:.2f} FPS ({total_frames} frames)")
         print(f" Output: {width}x{height} @ {new_fps:.2f} FPS")
         print(f" Multiplier: x{fps_multiplier}")
+        print(f" Inference mode: {self.inference_mode}")
         print(f" Processing mode: {tile_info}")
         intervals = max(total_frames - 1, 0)
         estimated_frames = intervals * fps_multiplier + (1 if total_frames else 0)
@@ -348,6 +359,7 @@ class VideoInterpolator:
                     raise ValueError("Cannot read first frame")
                 
                 prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2RGB)
+                prev_tensor = self.frame_to_tensor(prev_frame)
                 
                 pbar = tqdm(total=intervals, desc="Processing", unit="pair", ncols=100)
                 completed = 0
@@ -360,11 +372,13 @@ class VideoInterpolator:
                         break
                     
                     curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2RGB)
+                    curr_tensor = self.frame_to_tensor(curr_frame)
                     write_rgb(prev_frame)
-                    for inter_frame in self.generate_intermediate_frames(prev_frame, curr_frame, fps_multiplier):
-                        write_rgb(inter_frame)
+                    for inter_tensor in self.generate_intermediate_tensors(prev_tensor, curr_tensor, fps_multiplier):
+                        write_rgb(self.tensor_to_frame(inter_tensor))
                     
                     prev_frame = curr_frame
+                    prev_tensor = curr_tensor
                     completed += 1
                     pbar.update(1)
                     if progress_callback is not None:
@@ -395,6 +409,7 @@ class VideoInterpolator:
             
             ret, prev_frame = cap.read()
             prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2RGB)
+            prev_tensor = self.frame_to_tensor(prev_frame)
             
             pbar = tqdm(total=intervals, desc="Processing", unit="pair", ncols=100)
             completed = 0
@@ -407,11 +422,14 @@ class VideoInterpolator:
                     break
                 
                 curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2RGB)
+                curr_tensor = self.frame_to_tensor(curr_frame)
                 out.write(cv2.cvtColor(prev_frame, cv2.COLOR_RGB2BGR))
-                for inter_frame in self.generate_intermediate_frames(prev_frame, curr_frame, fps_multiplier):
+                for inter_tensor in self.generate_intermediate_tensors(prev_tensor, curr_tensor, fps_multiplier):
+                    inter_frame = self.tensor_to_frame(inter_tensor)
                     out.write(cv2.cvtColor(inter_frame, cv2.COLOR_RGB2BGR))
                 
                 prev_frame = curr_frame
+                prev_tensor = curr_tensor
                 completed += 1
                 pbar.update(1)
                 if progress_callback is not None:
@@ -456,6 +474,8 @@ def main():
                         help='Run refiner at lower resolution and upsample its residual. 1.0 keeps original behavior')
     parser.add_argument('--skip_refiner', action='store_true',
                         help='Skip residual U-Net refiner and output the coarse merged frame')
+    parser.add_argument('--inference_mode', type=str, default='auto', choices=['auto', 'full_frame'],
+                        help='auto uses tile inference for high resolutions; full_frame disables tile inference')
     parser.add_argument('--no_fp16', action='store_true',
                         help='Disable FP16 (use FP32)')
     parser.add_argument('--no_cuda_apply_shift', action='store_true',
@@ -490,6 +510,7 @@ def main():
         skip_refiner=args.skip_refiner,
         use_cuda_apply_shift=not args.no_cuda_apply_shift
     )
+    interpolator.set_inference_mode(args.inference_mode)
     
     # Process video
     interpolator.interpolate_video(

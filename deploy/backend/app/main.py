@@ -174,11 +174,13 @@ async def interpolate_video(
     fps_multiplier: int = Form(2),
     refiner_scale: float = Form(0.5),
     skip_refiner: bool = Form(False),
+    inference_mode: str = Form("auto"),
     crf: int = Form(18),
     ffmpeg_preset: str = Form("veryfast"),
 ):
     if fps_multiplier not in {2, 4, 8, 16, 32}:
         raise HTTPException(status_code=400, detail="fps_multiplier must be one of 2, 4, 8, 16, 32")
+    inference_mode = normalize_inference_mode(inference_mode)
 
     temp_dir = Path(tempfile.mkdtemp(prefix="vfi-video-"))
     input_path = temp_dir / "input.mp4"
@@ -199,6 +201,7 @@ async def interpolate_video(
                 interpolator.configure_runtime(
                     refiner_scale=refiner_scale,
                     skip_refiner=skip_refiner,
+                    inference_mode=inference_mode,
                 )
                 interpolator.interpolate_video(
                     input_path=str(input_path),
@@ -232,11 +235,13 @@ async def start_interpolate_video(
     fps_multiplier: int = Form(2),
     refiner_scale: float = Form(0.5),
     skip_refiner: bool = Form(False),
+    inference_mode: str = Form("auto"),
     crf: int = Form(18),
     ffmpeg_preset: str = Form("veryfast"),
 ):
     if fps_multiplier not in {2, 4, 8, 16, 32}:
         raise HTTPException(status_code=400, detail="fps_multiplier must be one of 2, 4, 8, 16, 32")
+    inference_mode = normalize_inference_mode(inference_mode)
 
     job_id = uuid.uuid4().hex
     temp_dir = Path(tempfile.mkdtemp(prefix=f"vfi-job-{job_id}-"))
@@ -262,6 +267,7 @@ async def start_interpolate_video(
         "error": None,
         "output_path": str(output_path),
         "temp_dir": str(temp_dir),
+        "inference_mode": inference_mode,
         "created_at": time.time(),
         "updated_at": time.time(),
     }
@@ -277,6 +283,7 @@ async def start_interpolate_video(
             fps_multiplier,
             refiner_scale,
             skip_refiner,
+            inference_mode,
             crf,
             normalize_ffmpeg_preset(ffmpeg_preset),
         ),
@@ -309,6 +316,14 @@ def normalize_ffmpeg_preset(value):
     value = (value or "veryfast").strip().lower()
     if value not in allowed:
         raise HTTPException(status_code=400, detail=f"ffmpeg_preset must be one of {', '.join(sorted(allowed))}")
+    return value
+
+
+def normalize_inference_mode(value):
+    allowed = {"auto", "full_frame"}
+    value = (value or "auto").strip().lower()
+    if value not in allowed:
+        raise HTTPException(status_code=400, detail=f"inference_mode must be one of {', '.join(sorted(allowed))}")
     return value
 
 
@@ -374,6 +389,7 @@ def run_video_job(
     fps_multiplier,
     refiner_scale,
     skip_refiner,
+    inference_mode,
     crf,
     ffmpeg_preset,
 ):
@@ -396,6 +412,7 @@ def run_video_job(
                 interpolator.configure_runtime(
                     refiner_scale=refiner_scale,
                     skip_refiner=skip_refiner,
+                    inference_mode=inference_mode,
                 )
                 interpolator.interpolate_video(
                     input_path=input_path,
@@ -441,6 +458,7 @@ def public_job(job):
         "total": job["total"],
         "message": job["message"],
         "error": job["error"],
+        "inference_mode": job.get("inference_mode", "auto"),
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
     }

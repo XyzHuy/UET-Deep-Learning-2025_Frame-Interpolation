@@ -45,6 +45,7 @@ export async function interpolateVideoWithBackend({
   fpsMultiplier,
   refinerScale,
   skipRefiner,
+  inferenceMode,
   ffmpegPreset,
   baseUrl = DEFAULT_BACKEND_URL,
 }) {
@@ -54,6 +55,7 @@ export async function interpolateVideoWithBackend({
   formData.append("fps_multiplier", String(fpsMultiplier));
   formData.append("refiner_scale", String(refinerScale));
   formData.append("skip_refiner", String(skipRefiner));
+  formData.append("inference_mode", inferenceMode || "auto");
   formData.append("ffmpeg_preset", ffmpegPreset);
 
   const response = await fetch(`${baseUrl}/api/interpolate/video`, {
@@ -75,6 +77,7 @@ export async function startVideoJob({
   fpsMultiplier,
   refinerScale,
   skipRefiner,
+  inferenceMode,
   ffmpegPreset,
   baseUrl = DEFAULT_BACKEND_URL,
 }) {
@@ -84,6 +87,7 @@ export async function startVideoJob({
   formData.append("fps_multiplier", String(fpsMultiplier));
   formData.append("refiner_scale", String(refinerScale));
   formData.append("skip_refiner", String(skipRefiner));
+  formData.append("inference_mode", inferenceMode || "auto");
   formData.append("ffmpeg_preset", ffmpegPreset);
 
   const response = await fetch(`${baseUrl}/api/interpolate/video/start`, {

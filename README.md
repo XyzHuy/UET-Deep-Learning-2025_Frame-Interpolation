@@ -81,7 +81,7 @@ The interpolated result demonstrates smoother motion and improved temporal conti
 Core Python environment:
 
 - Python **3.10+**
-- PyTorch **2.3+** and TorchVision **0.18+**
+- PyTorch **2.3+** and TorchVision **0.18+** (CUDA 12.1 wheel)
 - OpenCV, NumPy, tqdm, Pillow, Matplotlib
 - FFmpeg for video output through the default raw video pipe
 - CUDA-capable GPU is recommended for inference and benchmark
@@ -90,6 +90,7 @@ Core Python environment:
 Install Python dependencies from the repository root:
 
 ```bash
+python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 python3 -m pip install -r requirements.txt
 ```
 

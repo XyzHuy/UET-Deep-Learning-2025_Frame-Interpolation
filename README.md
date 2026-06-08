@@ -43,6 +43,17 @@ Interpolated Video (96 FPS) - On Red Dead Redemption 2
 https://github.com/user-attachments/assets/fc6b7e48-8e86-4955-8b17-53f3de7bc419
 
 
+Original Video (6 FPS) - Random video footage on youtube
+
+https://github.com/user-attachments/assets/d584fa27-ea9d-467b-aed8-8859535dd933
+
+
+Interpolated Video (96 FPS) - Random video footage on youtube 
+
+
+https://github.com/user-attachments/assets/c163e056-29ff-4bb3-a01d-af059cc1c8d8
+
+
 
 The interpolated result demonstrates smoother motion and improved temporal continuity compared to the low-FPS input.
 

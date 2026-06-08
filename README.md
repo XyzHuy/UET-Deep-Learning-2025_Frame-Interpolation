@@ -96,7 +96,7 @@ python Video_Inference.py \
   --input input_path \
   --output output_path \
   --model checkpoint/model.pth \
-  --fps_multiplier 2   # or 4
+  --fps_multiplier 2   # or 4,8,16,..
 ```
 
 By default, video inference runs the residual U-Net refiner at `--refiner_scale 0.5`
